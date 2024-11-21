@@ -1,35 +1,27 @@
 {
   "manifest_version": 3,
-
-  "name": "Chrome Extension TypeScript Starter",
-  "description": "Chrome Extension, TypeScript, Visual Studio Code",
+  "name": "Audioforma | YouTube Audio Visualizer",
   "version": "1.0",
-
-  "options_ui": {
-    "page": "options.html"
-  },
-
+  "description": "Analyzes the audio of a YouTube video and overlays visualizations.",
+  "permissions": ["activeTab"],
+  "host_permissions": ["*://www.youtube.com/*"],
   "action": {
-    "default_icon": "icon.png",
+    "default_icon": {
+      "16": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    },
     "default_popup": "popup.html"
-  },
-
+    },
+    "options_ui": {
+      "page": "options.html"
+    },
   "content_scripts": [
-      {
-          "matches": ["<all_urls>"],
-          "js": ["js/vendor.js", "js/content_script.js"]
-      }
-  ],
-
-  "background": {
-    "service_worker": "js/background.js"
-  },
-
-  "permissions": [
-    "storage"
-  ],
-
-  "host_permissions": [
-    "<all_urls>"
+    {
+      "matches": ["*://www.youtube.com/*"],
+      "js": [
+        "js/content_script.js"
+      ]
+    }
   ]
 }
