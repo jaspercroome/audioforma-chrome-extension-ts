@@ -3,25 +3,28 @@
   "name": "Audioforma | YouTube Audio Visualizer",
   "version": "1.0",
   "description": "Analyzes the audio of a YouTube video and overlays visualizations.",
-  "permissions": ["activeTab"],
   "host_permissions": ["*://www.youtube.com/*"],
+  "permissions": ["activeTab"],
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+H",
+        "mac": "Command+H"
+      }
+    }
+  },
   "action": {
     "default_icon": {
-      "16": "icon.png",
-      "48": "icon.png",
-      "128": "icon.png"
-    },
-    "default_popup": "popup.html"
-    },
-    "options_ui": {
-      "page": "options.html"
-    },
+      "16": "icon_16.png",
+      "32": "icon_32.png",
+      "48": "icon_48.png",
+      "128": "icon_128.png"
+    }
+  },
   "content_scripts": [
     {
       "matches": ["*://www.youtube.com/*"],
-      "js": [
-        "js/content_script.js"
-      ]
+      "js": ["js/content_script.js"]
     }
   ]
 }
