@@ -28,7 +28,7 @@ const getPathCoords = (
   const octaveIndex = octaves.indexOf(octave);
   const degrees = noteAngles[note as keyof typeof noteAngles] - 90;
 
-  const scaledRadius = radius * Math.min(power / BUFFER_SIZE, 1);
+  const scaledRadius = radius * Math.min(power / BUFFER_SIZE, 0.8);
 
   const xMove = width / 2;
   const yMove = getYMove(radius, octaveIndex);
@@ -61,6 +61,7 @@ const Visual = () => {
   const strongestNoteCoords = useRef<Array<[number, number]>>([[0, 0]]);
   const pathRef = useRef<SVGPathElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   // Add resize observer ref
   const resizeObserver = useRef<ResizeObserver>();
@@ -174,9 +175,13 @@ const Visual = () => {
     const amplitudesSorted = Object.entries(keyOctaveAmplitudes).sort(
       (a, b) => b[1] - a[1]
     );
+    const luminanceScale = scaleLinear().domain([0, 10]).range([0.2, 0.7]);
+    const satScale = scaleLinear().domain([0, 10]).range([0, 1]);
+    const widthScale = scaleLinear().domain([0, 10]).range([0.5, 4]);
 
     if (amplitudesSorted.length > 0 && pathRef.current) {
       const strongestNote = amplitudesSorted[0];
+      const strongestNotePower = strongestNote[1] / BUFFER_SIZE;
       const [x, y, degrees] = getPathCoords(
         strongestNote[0] ?? "",
         width,
@@ -194,16 +199,19 @@ const Visual = () => {
           .x((d) => d[0])
           .y((d) => d[1])
           .curve(
-            strongestNote[1] > BUFFER_SIZE * 0.75
+            strongestNotePower > BUFFER_SIZE * 0.75
               ? curveLinearClosed
               : curveBasisClosed
           );
 
         const renderPath = () => {
           const path = pathRef.current;
-          path?.setAttribute("stroke-width", "2");
           path?.setAttribute("fill-opacity", "0.5");
-          const color = hsl(degrees, 0.7, 0.5);
+          const color = hsl(
+            degrees,
+            satScale(strongestNotePower),
+            luminanceScale(strongestNotePower)
+          );
           select(path)
             .transition()
             .duration(100)
@@ -217,6 +225,13 @@ const Visual = () => {
               return interpolate(
                 path?.getAttribute("fill") || "#ff5200",
                 color.toString()
+              );
+            })
+            .attrTween("stroke-width", () => {
+              const currentWidth = path?.getAttribute("stroke-width") ?? "px";
+              return interpolate(
+                currentWidth,
+                widthScale(strongestNotePower) + "px"
               );
             })
             .attrTween("stroke", function () {
@@ -278,29 +293,36 @@ const Visual = () => {
           visibility: show ? "visible" : "hidden",
         }}
       >
-        {octaves.map((octave) => {
-          const octaveIndex = octaves.indexOf(octave);
-          return (
+        {latestData.current.pathData.map((point, index) => (
+          <g key={index}>
+            {index > 0 && (
+              <line
+                x1={point[0]}
+                y1={point[1]}
+                x2={latestData.current.pathData[index - 1][0]}
+                y2={latestData.current.pathData[index - 1][1]}
+                stroke="white"
+                strokeWidth={0.5}
+                opacity={0.25}
+              />
+            )}
             <circle
-              key={octave}
-              r={radius * 1.2}
-              fill="black"
-              opacity={0.1}
-              cx={width / 2}
-              cy={getYMove(radius, octaveIndex)}
-              onClick={() => {
-                show ? setRadius(2) : updateDimensions();
-              }}
+              cx={point[0]}
+              cy={point[1]}
+              r={2}
+              fill="white"
+              opacity={0.5}
             />
-          );
-        })}
+          </g>
+        ))}
+        <path ref={pathRef} id="audioforma-path" />
         {octaves.map((octave) => {
           const octaveIndex = octaves.indexOf(octave);
           const translateValue = `${width / 2}, ${getYMove(
             radius,
             octaveIndex
           )}`;
-          const probablyPercussion = octave > 6;
+          // const probablyPercussion = octave > 6;
           const noteNameValues = Object.values(noteNames);
 
           return noteNameValues.map((note) => {
@@ -313,48 +335,44 @@ const Visual = () => {
 
             const color = hsl(degrees, 0.7, 0.5);
             const rotateValue = noteAngles[note as keyof typeof noteAngles];
-            if (probablyPercussion) {
-              return (
-                <line
-                  key={`${note}${octave}`}
-                  x1={x - Math.min(amplitude, 100)}
-                  x2={x + Math.min(amplitude, 100)}
-                  y1={y}
-                  y2={y}
-                  opacity={0.4}
-                  transform={`translate(${translateValue}) rotate(${rotateValue} ${x} ${y})`}
-                />
-              );
-            } else {
-              const amplitudeScale = scaleLinear()
-                .domain([0, BUFFER_SIZE / 2])
-                .range([0, 200]);
-              return (
-                <rect
-                  key={`${note}${octave}`}
-                  x={`${x - Math.min(amplitudeScale(amplitude), 50)}px`}
-                  y={`${y}px`}
-                  width={`${Math.max(
-                    Math.min(amplitudeScale(amplitude) * 2, 100),
-                    0
-                  )}px`}
-                  height={`${2 * (10 - octave)}px`}
-                  fill={color.toString()}
-                  opacity="0.9"
-                  rx={`${Math.min(4, amplitudeScale(amplitude) / 2)}px`}
-                  transform={`translate(${translateValue}) rotate(${rotateValue} ${x} ${y})`}
-                  stroke="white"
-                />
-              );
-            }
+            // if (probablyPercussion) {
+            //   return (
+            //     <line
+            //       key={`${note}${octave}`}
+            //       x1={x - Math.min(amplitude, 100)}
+            //       x2={x + Math.min(amplitude, 100)}
+            //       y1={y}
+            //       y2={y}
+            //       opacity={0.4}
+            //       transform={`translate(${translateValue}) rotate(${rotateValue} ${x} ${y})`}
+            //     />
+            //   );
+            // } else {
+            const amplitudeScale = scaleLinear()
+              .domain([0, BUFFER_SIZE / 2])
+              .range([0, 200]);
+            return (
+              <rect
+                key={`${note}${octave}`}
+                x={`${x - Math.min(amplitudeScale(amplitude), 50)}px`}
+                y={`${y}px`}
+                width={`${Math.max(
+                  Math.min(amplitudeScale(amplitude) * 2, 100),
+                  0
+                )}px`}
+                height={`${2 * (10 - octave)}px`}
+                fill={color.toString()}
+                fillOpacity="0.8"
+                strokeOpacity="0.2"
+                strokeWidth={4}
+                rx={`${Math.min(4, amplitudeScale(amplitude) / 2)}px`}
+                transform={`translate(${translateValue}) rotate(${rotateValue} ${x} ${y})`}
+                stroke={color.toString()}
+              />
+            );
+            // }
           });
         })}
-        <path
-          ref={pathRef}
-          id="audioforma-path"
-          strokeWidth="4"
-          opacity={0.9}
-        />
       </svg>
     </>
   );
