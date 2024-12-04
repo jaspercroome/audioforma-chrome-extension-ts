@@ -5,10 +5,11 @@ import Meyda from "meyda";
 import React, { useEffect, useRef, useState } from "react";
 import { interpolate } from "d3-interpolate";
 import { select } from "d3-selection";
-import "d3-transition"; // needed for d3 transitions to work
+import "d3-transition";
 
-import { octaves, noteAngles, noteNames, BUFFER_SIZE } from "./consts";
-import { processPowerSpectrum } from "./processPowerSpectrum";
+import { octaves, noteAngles, noteNames, BUFFER_SIZE } from "../utils/consts";
+import { processPowerSpectrum } from "../utils/processPowerSpectrum";
+import { MeydaAnalyzer } from "meyda/dist/esm/meyda-wa";
 
 const getYMove = (radius: number, octaveIndex: number) => {
   return radius + octaveIndex * 24;
@@ -27,7 +28,7 @@ const getPathCoords = (
   const octaveIndex = octaves.indexOf(octave);
   const degrees = noteAngles[note as keyof typeof noteAngles] - 90;
 
-  const scaledRadius = radius * Math.min(power / BUFFER_SIZE, 1);
+  const scaledRadius = radius * Math.min(power / BUFFER_SIZE, 0.8);
 
   const xMove = width / 2;
   const yMove = getYMove(radius, octaveIndex);
@@ -38,13 +39,10 @@ const getPathCoords = (
   return [x, y, degrees];
 };
 
-interface VisualProps {
-  videoElement: HTMLVideoElement;
-}
-
-const Visual: React.FC<VisualProps> = ({ videoElement }) => {
+const Visual = () => {
+  const [tabId, setTabId] = useState<number>();
   const [audioContext, setAudioContext] = useState<AudioContext>();
-  const [analyzer, setAnalyzer] = useState<any>();
+  const [analyzer, setAnalyzer] = useState<MeydaAnalyzer>();
   const [keyOctaveAmplitudes, setKeyOctaveAmplitudes] = useState<
     Record<string, number>
   >({});
@@ -63,17 +61,18 @@ const Visual: React.FC<VisualProps> = ({ videoElement }) => {
   const strongestNoteCoords = useRef<Array<[number, number]>>([[0, 0]]);
   const pathRef = useRef<SVGPathElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   // Add resize observer ref
   const resizeObserver = useRef<ResizeObserver>();
 
-  // Update dimensions based on video element
+  // Update dimensions based on window size
   const updateDimensions = () => {
-    const videoWidth = videoElement.clientWidth;
-    const videoHeight = videoElement.clientHeight;
-    setWidth(videoWidth);
-    setHeight(videoHeight);
-    setRadius(Math.min(videoWidth, videoHeight) / 3); // Adjust divisor as needed
+    const windowWidth = window.innerWidth;
+    const windowHeight = window.innerHeight;
+    setWidth(windowWidth);
+    setHeight(windowHeight);
+    setRadius(Math.min(windowWidth, windowHeight) / 3);
   };
 
   // Add effect for dimension handling
@@ -83,97 +82,106 @@ const Visual: React.FC<VisualProps> = ({ videoElement }) => {
 
     // Setup resize observer
     resizeObserver.current = new ResizeObserver(updateDimensions);
-    resizeObserver.current.observe(videoElement);
+    resizeObserver.current.observe(document.body);
 
     // Cleanup
     return () => {
       resizeObserver.current?.disconnect();
     };
-  }, [videoElement]);
+  }, []);
 
   useEffect(() => {
-    // Initialize audio context when video starts playing
-    const handlePlay = () => {
-      if (!audioContext) {
-        try {
-          const ctx = new AudioContext();
-          const source = ctx.createMediaElementSource(videoElement);
-          source.connect(ctx.destination);
-
-          const meydaAnalyzer = Meyda.createMeydaAnalyzer({
-            audioContext: ctx,
-            source: source,
-            bufferSize: BUFFER_SIZE,
-            featureExtractors: ["powerSpectrum"],
-            callback: (features: { powerSpectrum: number[] }) => {
-              if (features.powerSpectrum) {
-                const newKeyOctaveAmplitudes = processPowerSpectrum(
-                  features.powerSpectrum,
-                  ctx
-                );
-                setKeyOctaveAmplitudes(newKeyOctaveAmplitudes);
-              }
-            },
-          });
-
-          meydaAnalyzer.start();
-          setAudioContext(ctx);
-          setAnalyzer(meydaAnalyzer);
-        } catch (e) {
-          // If video is already connected to another context
-          if (e instanceof DOMException && e.name === "InvalidStateError") {
-            // Get the existing context
-            const existingCtx = new AudioContext();
-            const destination = existingCtx.destination;
-
-            // Create analyzer without creating new MediaElementSource
-            const meydaAnalyzer = Meyda.createMeydaAnalyzer({
-              audioContext: existingCtx,
-              source: destination,
-              bufferSize: BUFFER_SIZE,
-              featureExtractors: ["powerSpectrum"],
-              callback: (features: { powerSpectrum: number[] }) => {
-                if (features.powerSpectrum) {
-                  const newKeyOctaveAmplitudes = processPowerSpectrum(
-                    features.powerSpectrum,
-                    existingCtx
-                  );
-                  setKeyOctaveAmplitudes(newKeyOctaveAmplitudes);
-                }
-              },
-            });
-
-            meydaAnalyzer.start();
-            setAudioContext(existingCtx);
-            setAnalyzer(meydaAnalyzer);
-          } else {
-            console.error("Error setting up audio context:", e);
-          }
-        }
+    console.log("Setting up message listener");
+    const messageHandler = (message: any) => {
+      console.log("Received message:", message);
+      if (message.type === "SOURCE_TAB_ID") {
+        console.log("Setting tab ID:", message.tabId);
+        setTabId(message.tabId);
       }
     };
 
-    videoElement.addEventListener("play", handlePlay);
-
-    // Cleanup
+    chrome.runtime.onMessage.addListener(messageHandler);
     return () => {
-      videoElement.removeEventListener("play", handlePlay);
-      if (analyzer) {
-        analyzer.stop();
-      }
-      if (audioContext) {
-        audioContext.close();
+      console.log("Cleaning up message listener");
+      chrome.runtime.onMessage.removeListener(messageHandler);
+    };
+  }, []);
+
+  useEffect(() => {
+    const setupAudioCapture = async () => {
+      console.log("Setting up audio capture with tabId:", tabId);
+      try {
+        // First get the media stream ID
+        const streamId = await new Promise<string>((resolve) => {
+          chrome.tabCapture.getMediaStreamId(
+            { targetTabId: tabId },
+            (streamId) => resolve(streamId)
+          );
+        });
+
+        // Then use the stream ID to get the media stream
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            mandatory: {
+              chromeMediaSource: "tab",
+              chromeMediaSourceId: streamId,
+            },
+          } as MediaTrackConstraints,
+          video: false,
+        });
+
+        console.log("Got media stream:", stream);
+        if (!stream) return;
+
+        const ctx = new AudioContext();
+        const source = ctx.createMediaStreamSource(stream);
+        source.connect(ctx.destination);
+
+        const meydaAnalyzer = Meyda.createMeydaAnalyzer({
+          audioContext: ctx,
+          source: source,
+          bufferSize: BUFFER_SIZE,
+          featureExtractors: ["powerSpectrum"],
+          callback: (features: { powerSpectrum: number[] }) => {
+            if (features.powerSpectrum) {
+              const newKeyOctaveAmplitudes = processPowerSpectrum(
+                features.powerSpectrum,
+                ctx
+              );
+              setKeyOctaveAmplitudes(newKeyOctaveAmplitudes);
+            }
+          },
+        });
+
+        meydaAnalyzer.start();
+        setAudioContext(ctx);
+        setAnalyzer(meydaAnalyzer);
+      } catch (error) {
+        console.error("Error in setupAudioCapture:", error);
       }
     };
-  }, [videoElement]);
+
+    if (tabId) {
+      setupAudioCapture();
+    }
+
+    return () => {
+      analyzer?.stop();
+      audioContext?.close();
+    };
+  }, [tabId]);
 
   useEffect(() => {
     const amplitudesSorted = Object.entries(keyOctaveAmplitudes).sort(
       (a, b) => b[1] - a[1]
     );
+    const luminanceScale = scaleLinear().domain([0, 10]).range([0.2, 0.7]);
+    const satScale = scaleLinear().domain([0, 10]).range([0, 1]);
+    const widthScale = scaleLinear().domain([0, 10]).range([0.5, 4]);
 
     if (amplitudesSorted.length > 0 && pathRef.current) {
       const strongestNote = amplitudesSorted[0];
+      const strongestNotePower = strongestNote[1] / BUFFER_SIZE;
       const [x, y, degrees] = getPathCoords(
         strongestNote[0] ?? "",
         width,
@@ -191,16 +199,19 @@ const Visual: React.FC<VisualProps> = ({ videoElement }) => {
           .x((d) => d[0])
           .y((d) => d[1])
           .curve(
-            strongestNote[1] > BUFFER_SIZE * 0.75
+            strongestNotePower > BUFFER_SIZE * 0.75
               ? curveLinearClosed
               : curveBasisClosed
           );
 
         const renderPath = () => {
           const path = pathRef.current;
-          path?.setAttribute("stroke-width", "2");
           path?.setAttribute("fill-opacity", "0.5");
-          const color = hsl(degrees, 0.7, 0.5);
+          const color = hsl(
+            degrees,
+            satScale(strongestNotePower),
+            luminanceScale(strongestNotePower)
+          );
           select(path)
             .transition()
             .duration(100)
@@ -214,6 +225,13 @@ const Visual: React.FC<VisualProps> = ({ videoElement }) => {
               return interpolate(
                 path?.getAttribute("fill") || "#ff5200",
                 color.toString()
+              );
+            })
+            .attrTween("stroke-width", () => {
+              const currentWidth = path?.getAttribute("stroke-width") ?? "px";
+              return interpolate(
+                currentWidth,
+                widthScale(strongestNotePower) + "px"
               );
             })
             .attrTween("stroke", function () {
@@ -263,6 +281,7 @@ const Visual: React.FC<VisualProps> = ({ videoElement }) => {
       }
     };
   }, []);
+
   return (
     <>
       <svg
@@ -274,29 +293,36 @@ const Visual: React.FC<VisualProps> = ({ videoElement }) => {
           visibility: show ? "visible" : "hidden",
         }}
       >
-        {octaves.map((octave) => {
-          const octaveIndex = octaves.indexOf(octave);
-          return (
+        {latestData.current.pathData.map((point, index) => (
+          <g key={index}>
+            {index > 0 && (
+              <line
+                x1={point[0]}
+                y1={point[1]}
+                x2={latestData.current.pathData[index - 1][0]}
+                y2={latestData.current.pathData[index - 1][1]}
+                stroke="white"
+                strokeWidth={0.5}
+                opacity={0.25}
+              />
+            )}
             <circle
-              key={octave}
-              r={radius * 1.2}
-              fill="black"
-              opacity={0.1}
-              cx={width / 2}
-              cy={getYMove(radius, octaveIndex)}
-              onClick={() => {
-                show ? setRadius(2) : updateDimensions();
-              }}
+              cx={point[0]}
+              cy={point[1]}
+              r={2}
+              fill="white"
+              opacity={0.5}
             />
-          );
-        })}
+          </g>
+        ))}
+        <path ref={pathRef} id="audioforma-path" />
         {octaves.map((octave) => {
           const octaveIndex = octaves.indexOf(octave);
           const translateValue = `${width / 2}, ${getYMove(
             radius,
             octaveIndex
           )}`;
-          const probablyPercussion = octave > 6;
+          // const probablyPercussion = octave > 6;
           const noteNameValues = Object.values(noteNames);
 
           return noteNameValues.map((note) => {
@@ -309,48 +335,44 @@ const Visual: React.FC<VisualProps> = ({ videoElement }) => {
 
             const color = hsl(degrees, 0.7, 0.5);
             const rotateValue = noteAngles[note as keyof typeof noteAngles];
-            if (probablyPercussion) {
-              return (
-                <line
-                  key={`${note}${octave}`}
-                  x1={x - Math.min(amplitude, 100)}
-                  x2={x + Math.min(amplitude, 100)}
-                  y1={y}
-                  y2={y}
-                  opacity={0.4}
-                  transform={`translate(${translateValue}) rotate(${rotateValue} ${x} ${y})`}
-                />
-              );
-            } else {
-              const amplitudeScale = scaleLinear()
-                .domain([0, BUFFER_SIZE / 2])
-                .range([0, 200]);
-              return (
-                <rect
-                  key={`${note}${octave}`}
-                  x={`${x - Math.min(amplitudeScale(amplitude), 50)}px`}
-                  y={`${y}px`}
-                  width={`${Math.max(
-                    Math.min(amplitudeScale(amplitude) * 2, 100),
-                    0
-                  )}px`}
-                  height={`${2 * (10 - octave)}px`}
-                  fill={color.toString()}
-                  opacity="0.9"
-                  rx={`${Math.min(4, amplitudeScale(amplitude) / 2)}px`}
-                  transform={`translate(${translateValue}) rotate(${rotateValue} ${x} ${y})`}
-                  stroke="white"
-                />
-              );
-            }
+            // if (probablyPercussion) {
+            //   return (
+            //     <line
+            //       key={`${note}${octave}`}
+            //       x1={x - Math.min(amplitude, 100)}
+            //       x2={x + Math.min(amplitude, 100)}
+            //       y1={y}
+            //       y2={y}
+            //       opacity={0.4}
+            //       transform={`translate(${translateValue}) rotate(${rotateValue} ${x} ${y})`}
+            //     />
+            //   );
+            // } else {
+            const amplitudeScale = scaleLinear()
+              .domain([0, BUFFER_SIZE / 2])
+              .range([0, 200]);
+            return (
+              <rect
+                key={`${note}${octave}`}
+                x={`${x - Math.min(amplitudeScale(amplitude), 50)}px`}
+                y={`${y}px`}
+                width={`${Math.max(
+                  Math.min(amplitudeScale(amplitude) * 2, 100),
+                  0
+                )}px`}
+                height={`${2 * (10 - octave)}px`}
+                fill={color.toString()}
+                fillOpacity="0.8"
+                strokeOpacity="0.2"
+                strokeWidth={4}
+                rx={`${Math.min(4, amplitudeScale(amplitude) / 2)}px`}
+                transform={`translate(${translateValue}) rotate(${rotateValue} ${x} ${y})`}
+                stroke={color.toString()}
+              />
+            );
+            // }
           });
         })}
-        <path
-          ref={pathRef}
-          id="audioforma-path"
-          strokeWidth="4"
-          opacity={0.9}
-        />
       </svg>
     </>
   );
