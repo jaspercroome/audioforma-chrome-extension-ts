@@ -7,12 +7,6 @@
         padding: 16px;
         font-family: system-ui, -apple-system, sans-serif;
       }
-      .hint {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        color: #666;
-      }
       kbd {
         background: #f3f3f3;
         border: 1px solid #ddd;
@@ -23,10 +17,7 @@
     </style>
   </head>
   <body>
-    <div class="hint">
-      <span>Press</span>
-      <kbd>cmd/ctrl</kbd>+<kbd>shift</kbd>+<kbd>U</kbd>
-      <span>to toggle the audio visualizer</span>
-    </div>
+    <div id="root"></div>
+    <script src="js/popup.js"></script>
   </body>
 </html>

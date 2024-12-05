@@ -31,9 +31,6 @@
       "128": "icon_128.png"
     }
   },
-  "options_ui": {
-    "page": "options.html"
-  },
   "background": {
     "service_worker": "js/background.js"
   }
