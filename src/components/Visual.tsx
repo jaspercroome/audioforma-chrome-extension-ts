@@ -175,8 +175,8 @@ const Visual = () => {
     const amplitudesSorted = Object.entries(keyOctaveAmplitudes).sort(
       (a, b) => b[1] - a[1]
     );
-    const luminanceScale = scaleLinear().domain([0, 10]).range([0.2, 0.7]);
-    const satScale = scaleLinear().domain([0, 10]).range([0, 1]);
+    const luminanceScale = scaleLinear().domain([0, 10]).range([0.5, 0.8]);
+    const satScale = scaleLinear().domain([0, 10]).range([0.5, 1]);
     const widthScale = scaleLinear().domain([0, 10]).range([0.5, 4]);
 
     if (amplitudesSorted.length > 0 && pathRef.current) {

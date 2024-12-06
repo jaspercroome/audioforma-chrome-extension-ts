@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Audioforma | YouTube Audio Visualizer",
-  "version": "1.1",
-  "description": "Analyzes the audio of a YouTube video and overlays visualizations.",
+  "name": "Audioforma | Universal Audio Visualizer",
+  "version": "1.1.1",
+  "description": "What does your favorite song _look_ like?",
   "browser_specific_settings": {
     "gecko": {
       "id": "audioforma@jaspercroo.me",
@@ -12,17 +12,12 @@
       "strict_min_version": "14"
     }
   },
-  "host_permissions": ["*://*/*", "<all_urls>"],
-  "permissions": [
-    "tabCapture",
-    "tabs",
-    "activeTab"
-  ],
+  "permissions": ["tabCapture", "activeTab"],
   "commands": {
     "toggle-visual": {
       "suggested_key": {
-        "default": "Ctrl+Shift+H",
-        "mac": "Command+Shift+H"
+        "default": "Ctrl+Shift+U",
+        "mac": "Command+Shift+U"
       },
       "description": "Toggle audio visualization"
     }
@@ -35,9 +30,6 @@
       "48": "icon_48.png",
       "128": "icon_128.png"
     }
-  },
-  "options_ui": {
-    "page": "options.html"
   },
   "background": {
     "service_worker": "js/background.js"

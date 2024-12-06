@@ -5,8 +5,8 @@ const srcDir = path.join(__dirname, "..", "src");
 
 module.exports = {
   entry: {
-    options: path.join(srcDir, "options.tsx"),
     background: path.join(srcDir, "background.ts"),
+    popup: path.join(srcDir, "components/Popup.tsx"),
     visual: path.join(srcDir, "components/Visual.tsx"),
     visualWindow: path.join(srcDir, "components/VisualWindow.tsx"),
   },
