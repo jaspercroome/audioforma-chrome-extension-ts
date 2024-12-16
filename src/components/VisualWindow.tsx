@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from "react";
-import Visual from "./Visual";
+import React from "react";
+import { Visual } from "./Visual";
 import { createRoot } from "react-dom/client";
 
 export const VisualWindow = () => {

@@ -6,12 +6,12 @@ import React, { useEffect, useRef, useState } from "react";
 import { octaves, noteAngles, noteNames, BUFFER_SIZE } from "../utils/consts";
 import { processPowerSpectrum } from "../utils/processPowerSpectrum";
 import { MeydaAnalyzer } from "meyda/dist/esm/meyda-wa";
-import { BASE_COLOR, ColorScale, getColor } from "../utils/colors";
+import { BASE_COLOR, ColorScale } from "../utils/colors";
 import { drawVisual, getYMove } from "../utils/drawVisual";
 
 interface VisualProps {}
 
-const Visual = (props: VisualProps) => {
+export const Visual = (props: VisualProps) => {
   const [tabId, setTabId] = useState<number>();
   const [audioContext, setAudioContext] = useState<AudioContext>();
   const [analyzer, setAnalyzer] = useState<MeydaAnalyzer>();
@@ -327,5 +327,3 @@ const Visual = (props: VisualProps) => {
     </div>
   );
 };
-
-export default Visual;
