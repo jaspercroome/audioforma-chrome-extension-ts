@@ -21,6 +21,7 @@ const toggleVisualWindow = async () => {
         type: "popup",
         width: 800,
         height: 600,
+        focused: true,
       });
       console.log("Created window:", window);
 
