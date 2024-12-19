@@ -1,55 +1,29 @@
-import { hsl } from "d3-color";
 import { scaleLinear } from "d3-scale";
-import { curveBasisClosed, curveLinearClosed, line } from "d3-shape";
+import "d3-transition";
 import Meyda from "meyda";
 import React, { useEffect, useRef, useState } from "react";
-import { interpolate } from "d3-interpolate";
-import { select } from "d3-selection";
-import "d3-transition";
 
 import { octaves, noteAngles, noteNames, BUFFER_SIZE } from "../utils/consts";
 import { processPowerSpectrum } from "../utils/processPowerSpectrum";
 import { MeydaAnalyzer } from "meyda/dist/esm/meyda-wa";
+import { BASE_COLOR, ColorScale } from "../utils/colors";
+import { drawVisual, getYMove } from "../utils/drawVisual";
 
-const getYMove = (radius: number, octaveIndex: number) => {
-  return radius + octaveIndex * 24;
-};
+interface VisualProps {}
 
-const getPathCoords = (
-  noteOctave: string,
-  width: number,
-  radius: number,
-  power: number
-) => {
-  const note = noteOctave.includes("#")
-    ? noteOctave.slice(0, 2)
-    : noteOctave.slice(0, 1);
-  const octave = Number(noteOctave.split("").pop());
-  const octaveIndex = octaves.indexOf(octave);
-  const degrees = noteAngles[note as keyof typeof noteAngles] - 90;
-
-  const scaledRadius = radius * Math.min(power / BUFFER_SIZE, 0.8);
-
-  const xMove = width / 2;
-  const yMove = getYMove(radius, octaveIndex);
-
-  const angle = (degrees / 360) * 2 * Math.PI;
-  const y = Math.sin(angle) * scaledRadius + yMove;
-  const x = Math.cos(angle) * scaledRadius + xMove;
-  return [x, y, degrees];
-};
-
-const Visual = () => {
+export const Visual = (props: VisualProps) => {
   const [tabId, setTabId] = useState<number>();
   const [audioContext, setAudioContext] = useState<AudioContext>();
   const [analyzer, setAnalyzer] = useState<MeydaAnalyzer>();
   const [keyOctaveAmplitudes, setKeyOctaveAmplitudes] = useState<
     Record<string, number>
   >({});
+  const [chroma, setChroma] = useState<number[]>([]);
+  const [turbulence, setTurbulence] = useState<number>(0);
   const [width, setWidth] = useState(600);
   const [height, setHeight] = useState(600 / (16 / 9));
   const [radius, setRadius] = useState(600 / (16 / 9) / 3);
-  const [show, setShow] = useState(true);
+  const [colorScale, setColorScale] = useState<ColorScale>("Cubehelix");
 
   // Add refs for animation handling
   const latestData = useRef({
@@ -60,6 +34,7 @@ const Visual = () => {
   const animationFrame = useRef<number>();
   const strongestNoteCoords = useRef<Array<[number, number]>>([[0, 0]]);
   const pathRef = useRef<SVGPathElement>(null);
+  const backgroundPathRef = useRef<SVGPathElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -98,6 +73,9 @@ const Visual = () => {
         console.log("Setting tab ID:", message.tabId);
         setTabId(message.tabId);
       }
+      if (message.type === "COLOR_SCALE") {
+        setColorScale(message.scale);
+      }
     };
 
     chrome.runtime.onMessage.addListener(messageHandler);
@@ -109,6 +87,7 @@ const Visual = () => {
 
   useEffect(() => {
     const setupAudioCapture = async () => {
+      const ctx = new AudioContext();
       console.log("Setting up audio capture with tabId:", tabId);
       try {
         // First get the media stream ID
@@ -118,8 +97,6 @@ const Visual = () => {
             (streamId) => resolve(streamId)
           );
         });
-
-        // Then use the stream ID to get the media stream
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             mandatory: {
@@ -127,11 +104,20 @@ const Visual = () => {
               chromeMediaSourceId: streamId,
             },
           } as MediaTrackConstraints,
-          video: false,
+          video: {
+            mandatory: {
+              chromeMediaSource: "tab",
+              chromeMediaSourceId: streamId,
+            },
+          } as MediaTrackConstraints,
         });
 
         console.log("Got media stream:", stream);
         if (!stream) return;
+
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+        }
 
         const ctx = new AudioContext();
         const source = ctx.createMediaStreamSource(stream);
@@ -141,14 +127,28 @@ const Visual = () => {
           audioContext: ctx,
           source: source,
           bufferSize: BUFFER_SIZE,
-          featureExtractors: ["powerSpectrum"],
-          callback: (features: { powerSpectrum: number[] }) => {
-            if (features.powerSpectrum) {
+          featureExtractors: ["powerSpectrum", "chroma", "spectralSpread"],
+          callback: ({
+            powerSpectrum,
+            chroma,
+            spectralSpread,
+          }: {
+            powerSpectrum: number[];
+            chroma: number[];
+            spectralSpread: number;
+          }) => {
+            if (powerSpectrum) {
               const newKeyOctaveAmplitudes = processPowerSpectrum(
-                features.powerSpectrum,
+                powerSpectrum,
                 ctx
               );
               setKeyOctaveAmplitudes(newKeyOctaveAmplitudes);
+            }
+            if (chroma) {
+              setChroma(chroma);
+            }
+            if (spectralSpread) {
+              setTurbulence(spectralSpread / (BUFFER_SIZE / 2));
             }
           },
         });
@@ -172,106 +172,17 @@ const Visual = () => {
   }, [tabId]);
 
   useEffect(() => {
-    const amplitudesSorted = Object.entries(keyOctaveAmplitudes).sort(
-      (a, b) => b[1] - a[1]
-    );
-    const luminanceScale = scaleLinear().domain([0, 10]).range([0.5, 0.8]);
-    const satScale = scaleLinear().domain([0, 10]).range([0.5, 1]);
-    const widthScale = scaleLinear().domain([0, 10]).range([0.5, 4]);
-
-    if (amplitudesSorted.length > 0 && pathRef.current) {
-      const strongestNote = amplitudesSorted[0];
-      const strongestNotePower = strongestNote[1] / BUFFER_SIZE;
-      const [x, y, degrees] = getPathCoords(
-        strongestNote[0] ?? "",
-        width,
-        radius,
-        amplitudesSorted[0][1]
-      );
-
-      const lastCoords =
-        strongestNoteCoords.current[strongestNoteCoords.current.length - 1];
-      const isSame = x === lastCoords[0] && y === lastCoords[1];
-
-      if (x && y && !isSame) {
-        // Update path data with new point
-        const lineGenerator = line()
-          .x((d) => d[0])
-          .y((d) => d[1])
-          .curve(
-            strongestNotePower > BUFFER_SIZE * 0.75
-              ? curveLinearClosed
-              : curveBasisClosed
-          );
-
-        const renderPath = () => {
-          const path = pathRef.current;
-          path?.setAttribute("fill-opacity", "0.5");
-          const color = hsl(
-            degrees,
-            satScale(strongestNotePower),
-            luminanceScale(strongestNotePower)
-          );
-          select(path)
-            .transition()
-            .duration(100)
-            .attrTween("d", function () {
-              const newPath =
-                lineGenerator(latestData.current.pathData) ?? "M10,10 L20,20";
-              const currentPath = path?.getAttribute("d") ?? newPath;
-              return interpolate(currentPath, newPath);
-            })
-            .attrTween("fill", function () {
-              return interpolate(
-                path?.getAttribute("fill") || "#ff5200",
-                color.toString()
-              );
-            })
-            .attrTween("stroke-width", () => {
-              const currentWidth = path?.getAttribute("stroke-width") ?? "px";
-              return interpolate(
-                currentWidth,
-                widthScale(strongestNotePower) + "px"
-              );
-            })
-            .attrTween("stroke", function () {
-              return interpolate(
-                path?.getAttribute("stroke") || "#ff5200",
-                color.toString()
-              );
-            })
-            .on("end", () => {
-              requestAnimationFrame(renderPath);
-            });
-        };
-        latestData.current.pathData.push([x, y]);
-        latestData.current.pathData.splice(
-          0,
-          latestData.current.pathData.length - 20
-        );
-
-        requestAnimationFrame(renderPath);
-      }
-    }
+    drawVisual({
+      keyOctaveAmplitudes,
+      width,
+      radius,
+      pathRef,
+      backgroundPathRef,
+      strongestNoteCoords,
+      colorScale,
+      latestData,
+    });
   }, [keyOctaveAmplitudes, width, height, radius]);
-
-  useEffect(() => {
-    // Define the handler function
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "h") {
-        e.preventDefault(); // Prevent browser's default Cmd/Ctrl+H behavior
-        setShow((prev) => !prev);
-      }
-    };
-
-    // Add event listener
-    document.addEventListener("keydown", handleKeyDown);
-
-    // Cleanup with the same function reference
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, []); // Empty dependency array since we don't use any external values
 
   // Remove or update the other cleanup effect since it's no longer needed
   useEffect(() => {
@@ -282,17 +193,69 @@ const Visual = () => {
     };
   }, []);
 
+  const scale = `${(1 / devicePixelRatio) * 100}%`;
+
   return (
-    <>
+    <div style={{ height, width, overflow: "hidden" }}>
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        style={{
+          position: "absolute",
+          zIndex: 0,
+          scale,
+          transformOrigin: "left top",
+          left: -window.screenLeft,
+          top: -window.screenTop,
+        }}
+        muted
+      />
       <svg
         ref={svgRef}
         id="audioForma-visual"
         width={Math.max(width, 1)}
         height={Math.max(height, 1)}
         style={{
-          visibility: show ? "visible" : "hidden",
+          position: "absolute",
+          zIndex: 1000,
         }}
       >
+        <filter id="blurMe">
+          <feGaussianBlur in="SourceGraphic" stdDeviation="10" />
+        </filter>
+        <rect
+          height={height}
+          width={width}
+          x={0}
+          y={0}
+          fill="black"
+          opacity=".6"
+        />
+        {chroma.map((chromaPresence, chromaIndex) => {
+          const chromaRadius = radius * 0.8;
+          const note = noteNames[chromaIndex as keyof typeof noteNames];
+          const degrees = noteAngles[note as keyof typeof noteAngles] - 90;
+          const angle = (degrees / 360) * 2 * Math.PI;
+          const x = Math.cos(angle) * chromaRadius;
+          const y = Math.sin(angle) * chromaRadius;
+          const translateValue = `${width / 2}, ${getYMove(chromaRadius, 8)}`;
+          return (
+            <text
+              x={`${x}px`}
+              y={`${y}px`}
+              fill={BASE_COLOR}
+              fontSize="16px"
+              transform={`translate(${translateValue})`}
+              fontWeight="600"
+              fontFamily="sans-serif"
+              opacity={chromaPresence}
+              textAnchor="middle"
+            >
+              {note}
+            </text>
+          );
+        })}
         {latestData.current.pathData.map((point, index) => (
           <g key={index}>
             {index > 0 && (
@@ -315,14 +278,14 @@ const Visual = () => {
             />
           </g>
         ))}
-        <path ref={pathRef} id="audioforma-path" />
+        <path ref={backgroundPathRef} filter="url(#blurMe)" strokeWidth={20} />
+        <path ref={pathRef} stroke="white" />
         {octaves.map((octave) => {
           const octaveIndex = octaves.indexOf(octave);
           const translateValue = `${width / 2}, ${getYMove(
             radius,
             octaveIndex
           )}`;
-          // const probablyPercussion = octave > 6;
           const noteNameValues = Object.values(noteNames);
 
           return noteNameValues.map((note) => {
@@ -332,50 +295,35 @@ const Visual = () => {
             const y = Math.sin(angle) * radius;
 
             const amplitude = keyOctaveAmplitudes[`${note}${octave}`] || 0;
-
-            const color = hsl(degrees, 0.7, 0.5);
             const rotateValue = noteAngles[note as keyof typeof noteAngles];
-            // if (probablyPercussion) {
-            //   return (
-            //     <line
-            //       key={`${note}${octave}`}
-            //       x1={x - Math.min(amplitude, 100)}
-            //       x2={x + Math.min(amplitude, 100)}
-            //       y1={y}
-            //       y2={y}
-            //       opacity={0.4}
-            //       transform={`translate(${translateValue}) rotate(${rotateValue} ${x} ${y})`}
-            //     />
-            //   );
-            // } else {
+
             const amplitudeScale = scaleLinear()
               .domain([0, BUFFER_SIZE / 2])
               .range([0, 200]);
             return (
-              <rect
-                key={`${note}${octave}`}
-                x={`${x - Math.min(amplitudeScale(amplitude), 50)}px`}
-                y={`${y}px`}
-                width={`${Math.max(
-                  Math.min(amplitudeScale(amplitude) * 2, 100),
-                  0
-                )}px`}
-                height={`${2 * (10 - octave)}px`}
-                fill={color.toString()}
-                fillOpacity="0.8"
-                strokeOpacity="0.2"
-                strokeWidth={4}
-                rx={`${Math.min(4, amplitudeScale(amplitude) / 2)}px`}
-                transform={`translate(${translateValue}) rotate(${rotateValue} ${x} ${y})`}
-                stroke={color.toString()}
-              />
+              <g>
+                <rect
+                  x={`${x - Math.min(amplitudeScale(amplitude), 50)}px`}
+                  y={`${y}px`}
+                  key={`${note}${octave}`}
+                  width={`${Math.max(
+                    Math.min(amplitudeScale(amplitude) * 2, 100),
+                    0
+                  )}px`}
+                  height={`${2 * (10 - octave)}px`}
+                  fill={BASE_COLOR}
+                  fillOpacity="0.6"
+                  strokeOpacity="0.2"
+                  strokeWidth={4}
+                  rx={`${Math.min(4, amplitudeScale(amplitude) / 2)}px`}
+                  transform={`translate(${translateValue}) rotate(${rotateValue} ${x} ${y})`}
+                  stroke={BASE_COLOR}
+                />
+              </g>
             );
-            // }
           });
         })}
       </svg>
-    </>
+    </div>
   );
 };
-
-export { Visual };
