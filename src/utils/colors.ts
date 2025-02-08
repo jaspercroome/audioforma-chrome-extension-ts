@@ -20,9 +20,9 @@ export const getColor = (args: {
   power: number;
   colorScale: ColorScale;
   colorNumberScale: (t: number) => number;
-  degree: number;
+  degrees: number;
 }) => {
-  const { power, colorScale, colorNumberScale, degree } = args;
+  const { power, colorScale, colorNumberScale, degrees } = args;
   switch (colorScale) {
     case "Rainbow - Cool": {
       return interpolateCool(colorNumberScale(power));
@@ -40,7 +40,7 @@ export const getColor = (args: {
       return interpolatePurples(colorNumberScale(power));
     }
     default: {
-      return hsl(degree, 0.7, power).toString();
+      return hsl(degrees, 0.7, power).toString();
     }
   }
 };

@@ -1,36 +1,61 @@
-import { interpolate } from "d3-interpolate";
-import { scaleLinear } from "d3-scale";
-import { select } from "d3-selection";
-import { line, curveLinearClosed, curveBasisClosed } from "d3-shape";
+import { curveBasisClosed, curveLinearClosed, line } from "d3-shape";
 import { ColorScale, getColor } from "./colors";
 import { BUFFER_SIZE, noteAngles, octaves } from "./consts";
+import { scaleLinear } from "d3-scale";
+import { select } from "d3-selection";
+import { interpolate } from "d3-interpolate";
+
+// Scale for cents to angle offset (±50 cents = ±15 degrees)
+export const centsToAngleOffset = scaleLinear()
+  .domain([-50, 50])
+  .range([-Math.PI / 12, Math.PI / 12]); // ±15 degrees in radians
 
 export const getYMove = (radius: number, octaveIndex: number) => {
   return radius + octaveIndex * 24;
 };
 
-export const getPathCoords = (
+type GetPathCoordsArgs = {
   noteOctave: string,
   width: number,
   radius: number,
-  power: number
-) => {
+  power: number,
+  isClassic?: boolean,
+  cents?: number
+}
+export const getPathCoords: (args: GetPathCoordsArgs) => {
+  x: number;
+  y: number;
+  degrees: number;
+  threeCoords: {x: number, y: number, z: number}
+} = (args) => {
+  const { noteOctave, power, cents, isClassic, width, radius } = args;
   const note = noteOctave.includes("#")
     ? noteOctave.slice(0, 2)
     : noteOctave.slice(0, 1);
   const octave = Number(noteOctave.split("").pop());
   const octaveIndex = octaves.indexOf(octave);
-  const degrees = noteAngles[note as keyof typeof noteAngles] - 90;
+  const centsAdjustment = ((cents ?? 0) / 100) * 30;
+  const degrees =
+    noteAngles[note as keyof typeof noteAngles] - 90 + centsAdjustment;
 
-  const scaledRadius = radius * Math.min(power / BUFFER_SIZE, 0.8);
+  const radiusValue = isClassic ? radius : 8;
 
-  const xMove = width / 2;
-  const yMove = getYMove(radius, octaveIndex);
+  const scaledRadius = radiusValue * Math.min(power / BUFFER_SIZE, 0.8);
+
+  const xMove = isClassic ? width / 2 : 0;
+  const yMove = isClassic ? getYMove(radius, octaveIndex) : 0;
 
   const angle = (degrees / 360) * 2 * Math.PI;
   const y = Math.sin(angle) * scaledRadius + yMove;
   const x = Math.cos(angle) * scaledRadius + xMove;
-  return [x, y, degrees];
+  const threeY = octave;
+  const threeCoords = { x: x, z: y, y: threeY };
+  return {
+    x,
+    y,
+    degrees,
+    threeCoords,
+  };
 };
 
 export const drawVisual = (args: {
@@ -39,7 +64,9 @@ export const drawVisual = (args: {
   radius: number;
   pathRef: React.RefObject<SVGPathElement>;
   backgroundPathRef: React.RefObject<SVGPathElement>;
-  strongestNoteCoords: React.MutableRefObject<[number, number][]>;
+  strongestNoteCoords: React.MutableRefObject<
+    { x: number; y: number; z: number }[]
+  >;
   colorScale: ColorScale;
   latestData: React.MutableRefObject<{
     pathData: Array<[number, number]>;
@@ -61,22 +88,25 @@ export const drawVisual = (args: {
   const amplitudesSorted = Object.entries(keyOctaveAmplitudes).sort(
     (a, b) => b[1] - a[1]
   );
-  const widthScale = scaleLinear().domain([0, 10]).range([0.5, 4]);
+      const widthScale = scaleLinear().domain([0, 10]).range([0.5, 4]);
   const colorNumberScale = scaleLinear().domain([0, 1]).range([0, 1]);
 
   if (amplitudesSorted.length > 0 && pathRef.current) {
     const strongestNote = amplitudesSorted[0];
     const strongestNotePower = strongestNote[1] / BUFFER_SIZE;
-    const [x, y, degree] = getPathCoords(
-      strongestNote[0] ?? "",
-      width,
-      radius,
-      amplitudesSorted[0][1]
+    const { x, y, degrees } = getPathCoords(
+      {
+        noteOctave: strongestNote[0] ?? "",
+        power: strongestNote[1],
+        width,
+        radius,
+        isClassic: true,
+      }
     );
 
     const lastCoords =
       strongestNoteCoords.current[strongestNoteCoords.current.length - 1];
-    const isSame = x === lastCoords[0] && y === lastCoords[1];
+    const isSame = x === lastCoords.x && y === lastCoords.y;
 
     if (x && y && !isSame) {
       // Update path data with new point
@@ -104,7 +134,7 @@ export const drawVisual = (args: {
           power: strongestNotePower,
           colorScale,
           colorNumberScale,
-          degree,
+          degrees,
         });
         select(path)
           .transition()

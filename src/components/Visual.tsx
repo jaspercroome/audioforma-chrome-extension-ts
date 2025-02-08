@@ -1,41 +1,36 @@
-import { scaleLinear } from "d3-scale";
-import "d3-transition";
-import Meyda from "meyda";
 import React, { useEffect, useRef, useState } from "react";
-
-import { octaves, noteAngles, noteNames, BUFFER_SIZE } from "../utils/consts";
-import { processPowerSpectrum } from "../utils/processPowerSpectrum";
+import Meyda from "meyda";
 import { MeydaAnalyzer } from "meyda/dist/esm/meyda-wa";
-import { BASE_COLOR, ColorScale } from "../utils/colors";
-import { drawVisual, getYMove } from "../utils/drawVisual";
+import { CameraControls, OrbitControls, PerspectiveCamera } from "@react-three/drei";
+import { Canvas } from "@react-three/fiber";
 
-interface VisualProps {}
+import { AudioFeatures, AmpArray, BUFFER_SIZE, defaultVisualSettings } from "../utils/consts";
+import { processPowerSpectrum } from "../utils/processPowerSpectrum";
+import { ColorScale } from "../utils/colors";
 
-export const Visual = (props: VisualProps) => {
+import { KeySegments } from "./KeySegments";
+import { ControlPanel } from "./ControlPanel";
+import { PointCloud } from "./PointCloud";
+import { CircleOfFifths } from "./CircleOfFifths";
+import { Classic } from "./Classic";
+
+export const Visual = () => {
   const [tabId, setTabId] = useState<number>();
   const [audioContext, setAudioContext] = useState<AudioContext>();
   const [analyzer, setAnalyzer] = useState<MeydaAnalyzer>();
+  const [settings, setSettings] = useState(defaultVisualSettings);
+  const [melodicAmps, setMelodicAmps] = useState<AmpArray>([])
+  const [percussiveAmps, setPercussiveAmps] = useState<AmpArray>([])
   const [keyOctaveAmplitudes, setKeyOctaveAmplitudes] = useState<
     Record<string, number>
   >({});
-  const [chroma, setChroma] = useState<number[]>([]);
-  const [turbulence, setTurbulence] = useState<number>(0);
   const [width, setWidth] = useState(600);
   const [height, setHeight] = useState(600 / (16 / 9));
-  const [radius, setRadius] = useState(600 / (16 / 9) / 3);
-  const [colorScale, setColorScale] = useState<ColorScale>("Cubehelix");
+  const [colorScale, setColorScale] = useState<ColorScale>("Rainbow - Warm");
+  const [visualStyle, setVisualStyle] = useState<'classic' | '3d'>('3d');
+  const [chroma, setChroma] = useState<number[]>([]);
 
   // Add refs for animation handling
-  const latestData = useRef({
-    pathData: [] as Array<[number, number]>,
-    color: "#ff5200",
-    path: "",
-  });
-  const animationFrame = useRef<number>();
-  const strongestNoteCoords = useRef<Array<[number, number]>>([[0, 0]]);
-  const pathRef = useRef<SVGPathElement>(null);
-  const backgroundPathRef = useRef<SVGPathElement>(null);
-  const svgRef = useRef<SVGSVGElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   // Add resize observer ref
@@ -47,7 +42,6 @@ export const Visual = (props: VisualProps) => {
     const windowHeight = window.innerHeight;
     setWidth(windowWidth);
     setHeight(windowHeight);
-    setRadius(Math.min(windowWidth, windowHeight) / 3);
   };
 
   // Add effect for dimension handling
@@ -87,7 +81,7 @@ export const Visual = (props: VisualProps) => {
 
   useEffect(() => {
     const setupAudioCapture = async () => {
-      const ctx = new AudioContext();
+      let cleanup: (() => void) | undefined;
       console.log("Setting up audio capture with tabId:", tabId);
       try {
         // First get the media stream ID
@@ -97,6 +91,12 @@ export const Visual = (props: VisualProps) => {
             (streamId) => resolve(streamId)
           );
         });
+
+        // Add error handling for stream
+        if (!streamId) {
+          throw new Error("Failed to get media stream ID");
+        }
+
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             mandatory: {
@@ -121,34 +121,44 @@ export const Visual = (props: VisualProps) => {
 
         const ctx = new AudioContext();
         const source = ctx.createMediaStreamSource(stream);
-        source.connect(ctx.destination);
-
+        
+        // Add a scriptProcessor node as a fallback to handle buffer underruns
+        const scriptProcessor = ctx.createScriptProcessor(BUFFER_SIZE / 2, 1, 1);
+        scriptProcessor.connect(ctx.destination);
+        source.connect(scriptProcessor);
+        
+        // Create analyzer with more robust error handling
         const meydaAnalyzer = Meyda.createMeydaAnalyzer({
           audioContext: ctx,
           source: source,
           bufferSize: BUFFER_SIZE,
-          featureExtractors: ["powerSpectrum", "chroma", "spectralSpread"],
-          callback: ({
-            powerSpectrum,
-            chroma,
-            spectralSpread,
-          }: {
-            powerSpectrum: number[];
-            chroma: number[];
-            spectralSpread: number;
-          }) => {
-            if (powerSpectrum) {
-              const newKeyOctaveAmplitudes = processPowerSpectrum(
-                powerSpectrum,
-                ctx
-              );
-              setKeyOctaveAmplitudes(newKeyOctaveAmplitudes);
-            }
-            if (chroma) {
-              setChroma(chroma);
-            }
-            if (spectralSpread) {
-              setTurbulence(spectralSpread / (BUFFER_SIZE / 2));
+          featureExtractors: [
+            'powerSpectrum',
+            'spectralCentroid',
+            'spectralFlatness',
+            'spectralKurtosis',
+            'spectralRolloff',
+            'perceptualSpread',
+            'chroma'
+          ],
+          callback: (features: AudioFeatures) => {
+            try {
+              if (features && features.powerSpectrum) {
+                const {
+                  keyOctaveAmps: newKeyOctaveAmplitudes,
+                  melodic: { fullSpectrumAmps: newMelodicAmps },
+                  percussive: { fullSpectrumAmps: newPercussiveAmps }
+                } = processPowerSpectrum(features, ctx);
+
+                setKeyOctaveAmplitudes(newKeyOctaveAmplitudes);
+                setMelodicAmps(newMelodicAmps);
+                setPercussiveAmps(newPercussiveAmps);
+                if (features.chroma) {
+                  setChroma(features.chroma);
+                }
+              }
+            } catch (error) {
+              console.error("Error processing audio features:", error);
             }
           },
         });
@@ -156,9 +166,32 @@ export const Visual = (props: VisualProps) => {
         meydaAnalyzer.start();
         setAudioContext(ctx);
         setAnalyzer(meydaAnalyzer);
+
+        // Setup cleanup function
+        cleanup = () => {
+          try {
+            meydaAnalyzer.stop();
+            scriptProcessor.disconnect();
+            source.disconnect();
+            stream.getTracks().forEach(track => track.stop());
+            ctx.close();
+          } catch (error) {
+            console.error("Error during cleanup:", error);
+          }
+        };
+
       } catch (error) {
         console.error("Error in setupAudioCapture:", error);
+        if (cleanup) {
+          cleanup();
+        }
       }
+
+      return () => {
+        if (cleanup) {
+          cleanup();
+        }
+      };
     };
 
     if (tabId) {
@@ -166,32 +199,22 @@ export const Visual = (props: VisualProps) => {
     }
 
     return () => {
-      analyzer?.stop();
-      audioContext?.close();
-    };
-  }, [tabId]);
-
-  useEffect(() => {
-    drawVisual({
-      keyOctaveAmplitudes,
-      width,
-      radius,
-      pathRef,
-      backgroundPathRef,
-      strongestNoteCoords,
-      colorScale,
-      latestData,
-    });
-  }, [keyOctaveAmplitudes, width, height, radius]);
-
-  // Remove or update the other cleanup effect since it's no longer needed
-  useEffect(() => {
-    return () => {
-      if (animationFrame.current) {
-        cancelAnimationFrame(animationFrame.current);
+      if (analyzer) {
+        try {
+          analyzer.stop();
+        } catch (error) {
+          console.error("Error stopping analyzer:", error);
+        }
+      }
+      if (audioContext) {
+        try {
+          audioContext.close();
+        } catch (error) {
+          console.error("Error closing audio context:", error);
+        }
       }
     };
-  }, []);
+  }, [tabId]);
 
   const scale = `${(1 / devicePixelRatio) * 100}%`;
 
@@ -211,119 +234,48 @@ export const Visual = (props: VisualProps) => {
         }}
         muted
       />
-      <svg
-        ref={svgRef}
-        id="audioForma-visual"
-        width={Math.max(width, 1)}
-        height={Math.max(height, 1)}
-        style={{
-          position: "absolute",
-          zIndex: 1000,
-        }}
-      >
-        <filter id="blurMe">
-          <feGaussianBlur in="SourceGraphic" stdDeviation="10" />
-        </filter>
-        <rect
-          height={height}
+      {visualStyle === '3d' ? (
+        <Canvas>
+          <ambientLight intensity={Math.PI / 2} />
+          <spotLight
+            position={[10, 10, 10]}
+            angle={0.15}
+            penumbra={1}
+            decay={0}
+            intensity={Math.PI}
+          />
+          <pointLight position={[-10, -10, -10]} decay={0} intensity={Math.PI} />
+          <PerspectiveCamera makeDefault position={[0, 4, 15]} fov={60} />
+          <CameraControls minDistance={1} maxDistance={50}/>
+          <OrbitControls />
+          {settings.showKeySegments && <KeySegments keyOctaveAmplitudes={keyOctaveAmplitudes} highlightColor={settings.keySegmentColor} />}
+          {settings.showCircleOfFifths && <CircleOfFifths />}
+          <PointCloud 
+            fullSpectrumAmps={melodicAmps} 
+            pointSize={settings.pointSize} 
+            stickRadius={settings.stickRadius} 
+            showSoundFlower={settings.showSoundFlower} 
+            colorScale={colorScale}
+          />
+        </Canvas>
+      ) : (
+        <Classic
+          chroma={chroma}
+          keyOctaveAmplitudes={keyOctaveAmplitudes}
           width={width}
-          x={0}
-          y={0}
-          fill="black"
-          opacity=".6"
+          height={height}
+          radius={Math.min(width, height) * 0.4}
+          colorScale={colorScale}
         />
-        {chroma.map((chromaPresence, chromaIndex) => {
-          const chromaRadius = radius * 0.8;
-          const note = noteNames[chromaIndex as keyof typeof noteNames];
-          const degrees = noteAngles[note as keyof typeof noteAngles] - 90;
-          const angle = (degrees / 360) * 2 * Math.PI;
-          const x = Math.cos(angle) * chromaRadius;
-          const y = Math.sin(angle) * chromaRadius;
-          const translateValue = `${width / 2}, ${getYMove(chromaRadius, 8)}`;
-          return (
-            <text
-              x={`${x}px`}
-              y={`${y}px`}
-              fill={BASE_COLOR}
-              fontSize="16px"
-              transform={`translate(${translateValue})`}
-              fontWeight="600"
-              fontFamily="sans-serif"
-              opacity={chromaPresence}
-              textAnchor="middle"
-            >
-              {note}
-            </text>
-          );
-        })}
-        {latestData.current.pathData.map((point, index) => (
-          <g key={index}>
-            {index > 0 && (
-              <line
-                x1={point[0]}
-                y1={point[1]}
-                x2={latestData.current.pathData[index - 1][0]}
-                y2={latestData.current.pathData[index - 1][1]}
-                stroke="white"
-                strokeWidth={0.5}
-                opacity={0.25}
-              />
-            )}
-            <circle
-              cx={point[0]}
-              cy={point[1]}
-              r={2}
-              fill="white"
-              opacity={0.5}
-            />
-          </g>
-        ))}
-        <path ref={backgroundPathRef} filter="url(#blurMe)" strokeWidth={20} />
-        <path ref={pathRef} stroke="white" />
-        {octaves.map((octave) => {
-          const octaveIndex = octaves.indexOf(octave);
-          const translateValue = `${width / 2}, ${getYMove(
-            radius,
-            octaveIndex
-          )}`;
-          const noteNameValues = Object.values(noteNames);
-
-          return noteNameValues.map((note) => {
-            const degrees = noteAngles[note as keyof typeof noteAngles] - 90;
-            const angle = (degrees / 360) * 2 * Math.PI;
-            const x = Math.cos(angle) * radius;
-            const y = Math.sin(angle) * radius;
-
-            const amplitude = keyOctaveAmplitudes[`${note}${octave}`] || 0;
-            const rotateValue = noteAngles[note as keyof typeof noteAngles];
-
-            const amplitudeScale = scaleLinear()
-              .domain([0, BUFFER_SIZE / 2])
-              .range([0, 200]);
-            return (
-              <g>
-                <rect
-                  x={`${x - Math.min(amplitudeScale(amplitude), 50)}px`}
-                  y={`${y}px`}
-                  key={`${note}${octave}`}
-                  width={`${Math.max(
-                    Math.min(amplitudeScale(amplitude) * 2, 100),
-                    0
-                  )}px`}
-                  height={`${2 * (10 - octave)}px`}
-                  fill={BASE_COLOR}
-                  fillOpacity="0.6"
-                  strokeOpacity="0.2"
-                  strokeWidth={4}
-                  rx={`${Math.min(4, amplitudeScale(amplitude) / 2)}px`}
-                  transform={`translate(${translateValue}) rotate(${rotateValue} ${x} ${y})`}
-                  stroke={BASE_COLOR}
-                />
-              </g>
-            );
-          });
-        })}
-      </svg>
+      )}
+      <ControlPanel 
+        settings={settings} 
+        onChange={setSettings} 
+        visualStyle={visualStyle}
+        onVisualStyleChange={setVisualStyle}
+        colorScale={colorScale}
+        onColorScaleChange={setColorScale}
+      />
     </div>
   );
 };

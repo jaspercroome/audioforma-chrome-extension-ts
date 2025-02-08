@@ -1,46 +1,98 @@
-export const BUFFER_SIZE = 2048;
+export type VisualSettings = {
+  showKeySegments: boolean;
+  showSoundFlower: boolean;
+  showCircleOfFifths: boolean;
+  keySegmentColor: string;
+  pointSize: number;
+  stickRadius: number;
+};
 
-export const noteNames = {
-  0: "C",
-  1: "C#",
-  2: "D",
-  3: "D#",
-  4: "E",
-  5: "F",
-  6: "F#",
-  7: "G",
-  8: "G#",
-  9: "A",
-  10: "A#",
-  11: "B",
+export type AudioFeatures = {
+  powerSpectrum: number[];
+  chroma: number[];
+  spectralCentroid: number;
+  spectralFlatness: number;
+  spectralKurtosis: number;
+  rms: number;
+  zcr: number;
+  spectralRolloff: number;
+  perceptualSpread: number;
+}
+export type AmpArray = Array<{ note: string; octave: number; cents: number; amplitude: number; tonality: number; brightness: number }>;
+export const BUFFER_SIZE = 4096;
+
+export enum NoteName {
+  'C' = 'C',
+  'C#' = 'C#',
+  'D' = 'D',
+  'D#' = 'D#',
+  'E' = 'E',
+  'F' = 'F',
+  'F#' = 'F#',
+  'G' = 'G',
+  'G#' = 'G#',
+  'A' = 'A',
+  'A#' = 'A#',
+  'B' = 'B',
+}
+
+export const noteNames: { [key: number]: NoteName } = {
+  0: NoteName.C,
+  1: NoteName['C#'],
+  2: NoteName.D,
+  3: NoteName['D#'],
+  4: NoteName.E,
+  5: NoteName.F,
+  6: NoteName['F#'],
+  7: NoteName.G,
+  8: NoteName['G#'],
+  9: NoteName.A,
+  10: NoteName['A#'],
+  11: NoteName.B,
 };
-export const noteAngles = {
-  C: 0,
-  "C#": 210,
-  D: 60,
-  "D#": 270,
-  E: 120,
-  F: 330,
-  "F#": 180,
-  G: 30,
-  "G#": 240,
-  A: 90,
-  "A#": 300,
-  B: 150,
+export const noteAngles: { [key in NoteName]: number } = {
+  [NoteName.C]: 0,
+  [NoteName['C#']]: 210,
+  [NoteName.D]: 60,
+  [NoteName['D#']]: 270,
+  [NoteName.E]: 120,
+  [NoteName.F]: 330,
+  [NoteName['F#']]: 180,
+  [NoteName.G]: 30,
+  [NoteName['G#']]: 240,
+  [NoteName.A]: 90,
+  [NoteName['A#']]: 300,
+  [NoteName.B]: 150,
 };
-export const NOTE_FREQUENCIES = {
-  C: 16.35,
-  D: 18.35,
-  E: 20.6,
-  F: 21.83,
-  G: 24.5,
-  A: 27.5,
-  B: 30.87,
-  "C#": 17.32,
-  "D#": 19.45,
-  "F#": 23.12,
-  "G#": 25.96,
-  "A#": 29.14,
+export const NOTE_FREQUENCIES: { [key in NoteName]: number } = {
+  [NoteName.C]: 16.35,
+  [NoteName.D]: 18.35,
+  [NoteName.E]: 20.6,
+  [NoteName.F]: 21.83,
+  [NoteName.G]: 24.5,
+  [NoteName.A]: 27.5,
+  [NoteName.B]: 30.87,
+  [NoteName['C#']]: 17.32,
+  [NoteName['D#']]: 19.45,
+  [NoteName['F#']]: 23.12,
+  [NoteName['G#']]: 25.96,
+  [NoteName['A#']]: 29.14,
 };
+
+export const NOTES = Object.keys(NOTE_FREQUENCIES);
 
 export const octaves = [0, 1, 2, 3, 4, 5, 6, 7].sort((a, b) => b - a);
+export const segmentArc = (Math.PI * 2) / Object.values(noteNames).length - 0.1;
+
+export const defaultVisualSettings: VisualSettings = {
+  showKeySegments: true,
+  showSoundFlower: true,
+  showCircleOfFifths: true,
+  keySegmentColor: '#32ddef',
+  pointSize: 0.05,
+  stickRadius: 0.01
+};
+
+export const spotifyAccessTokenKey = 'af-spotifyAccessToken';
+export const spotifyExpiryKey = 'af-spotifyExpiryTime';
+export const spotifyRefreshTokenKey = 'af-spotifyRefreshToken';
