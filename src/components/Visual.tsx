@@ -122,12 +122,12 @@ export const Visual = () => {
         const ctx = new AudioContext();
         const source = ctx.createMediaStreamSource(stream);
         
-        // Add a scriptProcessor node as a fallback to handle buffer underruns
-        const scriptProcessor = ctx.createScriptProcessor(BUFFER_SIZE / 2, 1, 1);
-        scriptProcessor.connect(ctx.destination);
-        source.connect(scriptProcessor);
+        // Create a proper audio graph for both playback and analysis
+        const gainNode = ctx.createGain();
+        gainNode.gain.value = 1; // Full volume for normal playback
+        source.connect(gainNode);
+        gainNode.connect(ctx.destination);
         
-        // Create analyzer with more robust error handling
         const meydaAnalyzer = Meyda.createMeydaAnalyzer({
           audioContext: ctx,
           source: source,
@@ -171,7 +171,7 @@ export const Visual = () => {
         cleanup = () => {
           try {
             meydaAnalyzer.stop();
-            scriptProcessor.disconnect();
+            gainNode.disconnect();
             source.disconnect();
             stream.getTracks().forEach(track => track.stop());
             ctx.close();
