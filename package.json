@@ -20,6 +20,7 @@
     "@heroicons/react": "^2.2.0",
     "@react-three/drei": "^9.121.4",
     "@react-three/fiber": "^8.17.14",
+    "d3-color": "^3.1.0",
     "d3-interpolate": "^3.0.1",
     "d3-scale": "^4.0.2",
     "d3-scale-chromatic": "^3.1.0",

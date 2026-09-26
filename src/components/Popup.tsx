@@ -2,17 +2,17 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 
 const toggleVisualWindow = () => {
-  chrome.runtime.sendMessage({ type: "toggle-visual" });
+  // Reading lastError in the callback keeps Chrome from logging it as unchecked.
+  chrome.runtime.sendMessage({ type: "toggle-visual" }, () => void chrome.runtime.lastError);
 };
 
 const Popup = () => {
-
   return (
     <div
       style={{
         display: "flex",
         flexDirection: "column",
-        alignItems: " center",
+        alignItems: "center",
         gap: "8px",
         color: "#666666",
       }}

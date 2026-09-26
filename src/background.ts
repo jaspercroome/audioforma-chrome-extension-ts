@@ -1,78 +1,58 @@
-let visualWindow: number | null = null;
-let sourceTabId: number | null = null;
+const VISUAL_PAGE = chrome.runtime.getURL("visual.html");
 
-const toggleVisualWindow = async () => {
-  console.log("Toggling visual window");
-  if (visualWindow) {
-    console.log("Closing existing window:", visualWindow);
-    await chrome.windows.remove(visualWindow);
-    visualWindow = null;
-  } else {
-    try {
-      const [tab] = await chrome.tabs.query({
-        active: true,
-        currentWindow: true,
-      });
-      console.log("Source tab:", tab);
-      sourceTabId = tab.id ?? null;
+type ExtensionContext = { contextType: string; documentUrl?: string; windowId: number };
 
-      const window = await chrome.windows.create({
-        url: chrome.runtime.getURL("visual.html"),
-        type: "popup",
-        width: 800,
-        height: 600,
-        focused: true,
-      });
-      console.log("Created window:", window);
-
-      visualWindow = window.id ?? null;
-    } catch (error) {
-      console.error("Failed to create window:", error);
-    }
-  }
+/**
+ * Find open visualizer windows by asking Chrome, instead of remembering them in
+ * module-level variables. MV3 service workers are shut down after ~30 s idle,
+ * which wiped those variables, so the shortcut would open a second visualizer
+ * instead of closing the first (and the second tab capture would fail).
+ */
+const findVisualWindows = async (): Promise<number[]> => {
+  const runtime = chrome.runtime as unknown as {
+    getContexts?: (filter: { contextTypes: string[] }) => Promise<ExtensionContext[]>;
+  };
+  if (!runtime.getContexts) return [];
+  const contexts = await runtime.getContexts({ contextTypes: ["TAB"] });
+  const windowIds = contexts
+    .filter((c) => c.documentUrl?.startsWith(VISUAL_PAGE) && c.windowId >= 0)
+    .map((c) => c.windowId);
+  return Array.from(new Set(windowIds));
 };
 
-chrome.commands.onCommand.addListener(async (command) => {
+const toggleVisualWindow = async () => {
+  const openWindows = await findVisualWindows();
+  if (openWindows.length > 0) {
+    await Promise.all(openWindows.map((id) => chrome.windows.remove(id).catch(() => undefined)));
+    return;
+  }
+
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (tab?.id === undefined) return;
+
+  // The source tab travels in the URL, so the visual page doesn't depend on a
+  // timed message arriving after its listener is registered.
+  await chrome.windows.create({
+    url: `${VISUAL_PAGE}?tabId=${tab.id}`,
+    type: "popup",
+    width: 800,
+    height: 600,
+    focused: true,
+  });
+};
+
+chrome.commands.onCommand.addListener((command) => {
   if (command === "toggle-visual") {
-    await toggleVisualWindow();
+    toggleVisualWindow().catch((error) => console.error("Failed to toggle visualizer:", error));
   }
 });
 
-// Make the message listener async and return true to keep the message channel open
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log("Received message:", message, "from:", sender);
-
-  // Add handler for toggle-visual message
-  if (message.type === "toggle-visual") {
-    toggleVisualWindow();
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "toggle-visual") {
+    toggleVisualWindow().catch((error) => console.error("Failed to toggle visualizer:", error));
   }
-
-  if (
-    message.type === "VISUAL_WINDOW_READY" &&
-    visualWindow &&
-    sourceTabId &&
-    sender.tab?.id
-  ) {
-    console.log("Visual window is ready, sending tab ID");
-    setTimeout(() => {
-      if (sender.tab?.id) {
-        try {
-          chrome.tabs.sendMessage(sender.tab.id, {
-            type: "SOURCE_TAB_ID",
-            tabId: sourceTabId,
-          });
-        } catch (error) {
-          console.error("Failed to send tab ID:", error);
-        }
-      }
-    }, 100);
-  }
-  return true;
-});
-
-chrome.windows.onRemoved.addListener((windowId) => {
-  if (windowId === visualWindow) {
-    visualWindow = null;
-    sourceTabId = null;
-  }
+  // Reply straight away. The old listener returned `true` (promising an async
+  // reply) but never replied, so every sender's promise rejected with
+  // "message channel closed before a response was received".
+  sendResponse({ ok: true });
 });
