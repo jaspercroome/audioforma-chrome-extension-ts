@@ -189,6 +189,28 @@ const MoodRig = ({
   return null;
 };
 
+/**
+ * Keep the whole orb in frame on any window shape. The field of view is
+ * vertical, so on a tall, narrow window (a phone, a slim popup) the camera
+ * backs off until the orb and its veins fit the width. Runs on resize only,
+ * so it never fights the viewer's own zooming.
+ */
+const FitCamera = () => {
+  const { camera, size, controls } = useThree();
+  useEffect(() => {
+    if (!(camera instanceof THREE.PerspectiveCamera)) return;
+    const aspect = size.width / Math.max(1, size.height);
+    const halfHeight = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+    const neededForWidth = 3.4 / (2 * halfHeight * aspect);
+    const distance = Math.max(6.4, neededForWidth);
+    const target = new THREE.Vector3(0, -0.05, 0);
+    const offset = camera.position.clone().sub(target);
+    camera.position.copy(target.add(offset.setLength(distance)));
+    (controls as unknown as { update?: () => void } | null)?.update?.();
+  }, [camera, size.width, size.height, controls]);
+  return null;
+};
+
 /** Deterministic slow orbit for rendered clips; OrbitControls handles live use. */
 const RenderCamera = () => {
   useFrame(({ camera, clock }) => {
@@ -287,17 +309,20 @@ const OrbWorld = ({
       {renderMode ? (
         <RenderCamera />
       ) : (
-        <OrbitControls
-          makeDefault
-          enablePan={false}
-          enableDamping
-          autoRotate={settings.autoRotate}
-          autoRotateSpeed={0.35}
-          minDistance={3.4}
-          maxDistance={11}
-          maxPolarAngle={Math.PI * 0.52}
-          target={[0, -0.05, 0]}
-        />
+        <>
+          <OrbitControls
+            makeDefault
+            enablePan={false}
+            enableDamping
+            autoRotate={settings.autoRotate}
+            autoRotateSpeed={0.35}
+            minDistance={3.4}
+            maxDistance={18}
+            maxPolarAngle={Math.PI * 0.52}
+            target={[0, -0.05, 0]}
+          />
+          <FitCamera />
+        </>
       )}
 
       <EffectComposer multisampling={4}>
