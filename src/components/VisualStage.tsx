@@ -3,28 +3,22 @@ import Meyda from "meyda";
 import { OrbitControls, PerspectiveCamera } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 
-import { AudioFeatures, AmpArray, BUFFER_SIZE, defaultVisualSettings } from "../utils/consts";
+import { AudioFeatures, AmpArray, BUFFER_SIZE, defaultVisualSettings, FEATURE_EXTRACTORS } from "../utils/consts";
 import { HarmonicMask, processPowerSpectrum } from "../utils/processPowerSpectrum";
 import { ColorScale } from "../utils/colors";
 import { classicRadius } from "../utils/drawVisual";
 
+import { emptyOrbFrame, OrbAnalyzer, OrbFrame } from "../utils/orbAnalysis";
+import { LowBandAnalyzer, LOW_FFT_SIZE } from "../utils/lowBand";
+import { OrbScene } from "./orb/OrbScene";
 import { KeySegments } from "./KeySegments";
 import { ControlPanel } from "./ControlPanel";
 import { PointCloud } from "./PointCloud";
 import { CircleOfFifths } from "./CircleOfFifths";
 import { Classic } from "./Classic";
 
-export type VisualStyle = "classic" | "3d";
+export type VisualStyle = "orb" | "3d" | "classic";
 
-export const FEATURE_EXTRACTORS = [
-  "powerSpectrum",
-  "spectralCentroid",
-  "spectralFlatness",
-  "spectralKurtosis",
-  "spectralRolloff",
-  "chroma",
-  "rms",
-] as const;
 
 export type StageAudio = { context: BaseAudioContext; source: AudioNode };
 
@@ -50,7 +44,7 @@ const useWindowSize = () => {
   return size;
 };
 
-export const VisualStage = ({ audio, backgroundStream, initialStyle = "3d" }: VisualStageProps) => {
+export const VisualStage = ({ audio, backgroundStream, initialStyle = "orb" }: VisualStageProps) => {
   const { width, height } = useWindowSize();
   const [settings, setSettings] = useState(defaultVisualSettings);
   const [melodicAmps, setMelodicAmps] = useState<AmpArray>([]);
@@ -60,6 +54,11 @@ export const VisualStage = ({ audio, backgroundStream, initialStyle = "3d" }: Vi
   const [chroma, setChroma] = useState<number[]>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
   const harmonicMask = useMemo(() => new HarmonicMask(), []);
+  // The orb reads analysis from a ref inside its render loop, so audio frames
+  // don't re-render the React tree while it's showing.
+  const orbFrameRef = useRef<OrbFrame>(emptyOrbFrame());
+  const styleRef = useRef(visualStyle);
+  styleRef.current = visualStyle;
 
   useEffect(() => {
     if (videoRef.current) videoRef.current.srcObject = backgroundStream ?? null;
@@ -68,6 +67,17 @@ export const VisualStage = ({ audio, backgroundStream, initialStyle = "3d" }: Vi
   useEffect(() => {
     if (!audio) return;
     harmonicMask.reset();
+    const orbAnalyzer = new OrbAnalyzer({
+      hopSeconds: BUFFER_SIZE / audio.context.sampleRate,
+      sampleRate: audio.context.sampleRate,
+      fftSize: BUFFER_SIZE,
+    });
+    // Raw recent samples for the long-FFT bass analysis (Meyda only exposes windowed frames).
+    const tap = audio.context.createAnalyser();
+    tap.fftSize = LOW_FFT_SIZE;
+    audio.source.connect(tap);
+    const recent = new Float32Array(LOW_FFT_SIZE);
+    const lowBand = new LowBandAnalyzer(audio.context.sampleRate);
     const analyzer = Meyda.createMeydaAnalyzer({
       audioContext: audio.context as AudioContext,
       source: audio.source,
@@ -76,7 +86,16 @@ export const VisualStage = ({ audio, backgroundStream, initialStyle = "3d" }: Vi
       callback: (features: AudioFeatures) => {
         try {
           if (!features?.powerSpectrum) return;
-          const { keyOctaveAmps, melodic } = processPowerSpectrum(features, audio.context, harmonicMask);
+          const { keyOctaveAmps, melodic, fullSpectrumAmps } = processPowerSpectrum(
+            features,
+            audio.context,
+            harmonicMask
+          );
+          if (styleRef.current === "orb") {
+            tap.getFloatTimeDomainData(recent);
+            orbFrameRef.current = orbAnalyzer.update(fullSpectrumAmps, features, lowBand.analyze(recent));
+            return;
+          }
           setKeyOctaveAmplitudes(keyOctaveAmps);
           setMelodicAmps(melodic.fullSpectrumAmps);
           if (features.chroma) setChroma(features.chroma);
@@ -86,7 +105,10 @@ export const VisualStage = ({ audio, backgroundStream, initialStyle = "3d" }: Vi
       },
     });
     analyzer.start();
-    return () => analyzer.stop();
+    return () => {
+      analyzer.stop();
+      audio.source.disconnect(tap);
+    };
   }, [audio, harmonicMask]);
 
   const scale = `${(1 / devicePixelRatio) * 100}%`;
@@ -104,10 +126,17 @@ export const VisualStage = ({ audio, backgroundStream, initialStyle = "3d" }: Vi
           transformOrigin: "left top",
           left: -window.screenLeft,
           top: -window.screenTop,
+          // The orb has its own opaque room, so skip compositing the tab video.
+          display: visualStyle === "orb" ? "none" : undefined,
         }}
         muted
       />
-      {visualStyle === "3d" ? (
+      {visualStyle === "orb" ? (
+        <OrbScene
+          frameRef={orbFrameRef}
+          settings={{ mood: settings.orbMood, autoRotate: settings.orbAutoRotate }}
+        />
+      ) : visualStyle === "3d" ? (
         <Canvas>
           <ambientLight intensity={Math.PI / 2} />
           <spotLight position={[10, 10, 10]} angle={0.15} penumbra={1} decay={0} intensity={Math.PI} />

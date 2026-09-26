@@ -5,6 +5,10 @@ export type VisualSettings = {
   keySegmentColor: string;
   pointSize: number;
   stickRadius: number;
+  /** Orb: tint the room by the harmonic lean (experimental). */
+  orbMood: boolean;
+  /** Orb: slowly orbit the camera. */
+  orbAutoRotate: boolean;
 };
 
 export type AudioFeatures = {
@@ -34,6 +38,17 @@ export type AmpPoint = {
 };
 export type AmpArray = Array<AmpPoint>;
 export const BUFFER_SIZE = 4096;
+
+/** Meyda features every view needs; shared by the live analyzer and offline analysis. */
+export const FEATURE_EXTRACTORS = [
+  "powerSpectrum",
+  "spectralCentroid",
+  "spectralFlatness",
+  "spectralKurtosis",
+  "spectralRolloff",
+  "chroma",
+  "rms",
+] as const;
 
 export enum NoteName {
   'C' = 'C',
@@ -106,7 +121,9 @@ export const defaultVisualSettings: VisualSettings = {
   showCircleOfFifths: true,
   keySegmentColor: '#32ddef',
   pointSize: 0.05,
-  stickRadius: 0.01
+  stickRadius: 0.01,
+  orbMood: true,
+  orbAutoRotate: true,
 };
 
 export const spotifyAccessTokenKey = 'af-spotifyAccessToken';

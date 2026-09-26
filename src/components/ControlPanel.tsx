@@ -5,6 +5,20 @@ import { useState } from 'react';
 import { Cog6ToothIcon, XMarkIcon } from '@heroicons/react/24/solid';
 import { VisualSettings } from '../utils/consts';
 import { ColorScale } from '../utils/colors';
+import { NOTE_COLORS_HEX } from '../utils/noteColors';
+import { noteNames } from '../utils/consts';
+import { fifthsIndex } from '../utils/notes';
+import type { VisualStyle } from './VisualStage';
+
+const STYLE_OPTIONS: Array<{ value: VisualStyle; label: string }> = [
+  { value: 'orb', label: 'Orb' },
+  { value: '3d', label: '3D' },
+  { value: 'classic', label: 'Classic' },
+];
+
+// Pitch classes in circle-of-fifths order, for the orb colour legend.
+const FIFTHS_ORDER = Object.values(noteNames).sort((a, b) => fifthsIndex(a) - fifthsIndex(b));
+const pitchClassOf = (note: string) => Object.values(noteNames).indexOf(note as never);
 import {
   interpolateCool,
   interpolateCubehelixDefault,
@@ -16,8 +30,8 @@ import {
 interface ControlPanelProps {
   settings: VisualSettings;
   onChange: (settings: VisualSettings) => void;
-  visualStyle: 'classic' | '3d';
-  onVisualStyleChange: (style: 'classic' | '3d') => void;
+  visualStyle: VisualStyle;
+  onVisualStyleChange: (style: VisualStyle) => void;
   colorScale: ColorScale;
   onColorScaleChange: (scale: ColorScale) => void;
 }
@@ -118,43 +132,67 @@ export const ControlPanel = ({
             backgroundColor: '#f3f4f6',
             borderRadius: '8px'
           }}>
-            <button
-              style={{
-                flex: 1,
-                padding: '4px 8px',
-                borderRadius: '6px',
-                fontSize: '14px',
-                transition: 'all 0.2s ease',
-                backgroundColor: visualStyle === '3d' ? '#fff' : 'transparent',
-                boxShadow: visualStyle === '3d' ? '0 1px 2px rgba(0,0,0,0.1)' : 'none',
-                color: visualStyle === '3d' ? '#1f2937' : '#4b5563',
-                cursor: 'pointer',
-                border: 'none'
-              }}
-              onClick={() => onVisualStyleChange('3d')}
-            >
-              3D
-            </button>
-            <button
-              style={{
-                flex: 1,
-                padding: '4px 8px',
-                borderRadius: '6px',
-                fontSize: '14px',
-                transition: 'all 0.2s ease',
-                backgroundColor: visualStyle === 'classic' ? '#fff' : 'transparent',
-                boxShadow: visualStyle === 'classic' ? '0 1px 2px rgba(0,0,0,0.1)' : 'none',
-                color: visualStyle === 'classic' ? '#1f2937' : '#4b5563',
-                cursor: 'pointer',
-                border: 'none'
-              }}
-              onClick={() => onVisualStyleChange('classic')}
-            >
-              Classic
-            </button>
+            {STYLE_OPTIONS.map(({ value, label }) => (
+              <button
+                key={value}
+                style={{
+                  flex: 1,
+                  padding: '4px 8px',
+                  borderRadius: '6px',
+                  fontSize: '14px',
+                  transition: 'all 0.2s ease',
+                  backgroundColor: visualStyle === value ? '#fff' : 'transparent',
+                  boxShadow: visualStyle === value ? '0 1px 2px rgba(0,0,0,0.1)' : 'none',
+                  color: visualStyle === value ? '#1f2937' : '#4b5563',
+                  cursor: 'pointer',
+                  border: 'none'
+                }}
+                onClick={() => onVisualStyleChange(value)}
+              >
+                {label}
+              </button>
+            ))}
           </div>
 
-          {/* Color Scale Selector */}
+          {visualStyle === 'orb' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: '14px', color: '#4b5563' }}>Mood lighting (experimental)</span>
+                <input
+                  type="checkbox"
+                  checked={settings.orbMood}
+                  onChange={(e) => onChange({ ...settings, orbMood: e.target.checked })}
+                  style={{ width: '16px', height: '16px' }}
+                />
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: '14px', color: '#4b5563' }}>Auto-rotate</span>
+                <input
+                  type="checkbox"
+                  checked={settings.orbAutoRotate}
+                  onChange={(e) => onChange({ ...settings, orbAutoRotate: e.target.checked })}
+                  style={{ width: '16px', height: '16px' }}
+                />
+              </label>
+              <div style={{ fontSize: '12px', color: '#6b7280', lineHeight: 1.45 }}>
+                Each vein is a note, coloured by its place on the circle of fifths. Glow is volume;
+                low notes hug the glass, high notes float further out. The inner light follows the
+                harmonic centre, and mood lighting warms or cools the room as the harmony leans
+                sharpward or flatward of home.
+              </div>
+              <div style={{ display: 'flex', gap: '2px' }}>
+                {FIFTHS_ORDER.map((note) => (
+                  <div key={note} style={{ flex: 1, textAlign: 'center' }}>
+                    <div style={{ height: '10px', borderRadius: '2px', backgroundColor: NOTE_COLORS_HEX[pitchClassOf(note)] }} />
+                    <span style={{ fontSize: '9px', color: '#6b7280' }}>{note}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Color Scale Selector (the orb colours notes by the circle of fifths instead) */}
+          {visualStyle !== 'orb' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             <span style={{ fontSize: '14px', color: '#4b5563' }}>Color Scale</span>
             {scaleOptions.map(({ name, scale }) => (
@@ -191,6 +229,7 @@ export const ControlPanel = ({
               </div>
             ))}
           </div>
+          )}
 
           {visualStyle === '3d' && (
             <>
