@@ -13,12 +13,26 @@ export type AudioFeatures = {
   spectralCentroid: number;
   spectralFlatness: number;
   spectralKurtosis: number;
-  rms: number;
-  zcr: number;
   spectralRolloff: number;
-  perceptualSpread: number;
+  rms?: number;
+  zcr?: number;
+  perceptualSpread?: number;
 }
-export type AmpArray = Array<{ note: string; octave: number; cents: number; amplitude: number; tonality: number; brightness: number }>;
+export type AmpPoint = {
+  note: NoteName;
+  octave: number;
+  cents: number;
+  /** Treble-weighted amplitude (what the classic/3D views have always used). */
+  amplitude: number;
+  /** Unweighted amplitude, for harmony-oriented analysis. */
+  rawAmplitude: number;
+  /** Per-point harmonic score, 0 (percussive/noisy) to 1 (sustained, pitched). */
+  harmonicity: number;
+  /** Kept for compatibility; now equal to harmonicity. */
+  tonality: number;
+  brightness: number;
+};
+export type AmpArray = Array<AmpPoint>;
 export const BUFFER_SIZE = 4096;
 
 export enum NoteName {
@@ -82,6 +96,8 @@ export const NOTE_FREQUENCIES: { [key in NoteName]: number } = {
 export const NOTES = Object.keys(NOTE_FREQUENCIES);
 
 export const octaves = [0, 1, 2, 3, 4, 5, 6, 7].sort((a, b) => b - a);
+/** Height between octave layers in the 3D view (shared by points, segments and flowers). */
+export const OCTAVE_SPACING_3D = 1.5;
 export const segmentArc = (Math.PI * 2) / Object.values(noteNames).length - 0.1;
 
 export const defaultVisualSettings: VisualSettings = {
