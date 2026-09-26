@@ -1,11 +1,13 @@
-import React,{ useRef, useEffect } from 'react';
-import { useFrame } from '@react-three/fiber';
-import * as THREE from 'three';
+import React, { useRef, useEffect, useMemo } from "react";
+import { useFrame } from "@react-three/fiber";
+import * as THREE from "three";
 
-import { ColorScale, getColor } from '../utils/colors';
+import { ColorScale, getColor } from "../utils/colors";
 
 const NUM_OCTAVES = 10;
 const LERP_FACTOR = 0.08;
+const MAX_RIM_POINTS = 32;
+const MAX_VERTICES = MAX_RIM_POINTS + 2; // centre + rim + closing vertex
 
 interface SoundFlowerProps {
   points: Array<{
@@ -17,197 +19,157 @@ interface SoundFlowerProps {
 
 interface OctaveShape {
   geometry: THREE.BufferGeometry;
+  positions: THREE.BufferAttribute;
   mesh: THREE.Mesh;
+  material: THREE.MeshPhysicalMaterial;
   currentPoints: THREE.Vector3[];
   targetPoints: THREE.Vector3[];
 }
 
+const octaveColor = (octave: number, colorScale: ColorScale) =>
+  getColor({
+    power: octave / NUM_OCTAVES,
+    colorScale,
+    colorNumberScale: () => octave / NUM_OCTAVES,
+    degrees: 0,
+  });
+
+// Fan triangulation from the centre vertex; fixed, so it is built once.
+const FAN_INDICES = (() => {
+  const indices: number[] = [];
+  for (let i = 1; i < MAX_VERTICES - 1; i++) indices.push(0, i, i + 1);
+  return indices;
+})();
+
 export const SoundFlower = ({ points, colorScale }: SoundFlowerProps) => {
   const groupRef = useRef<THREE.Group>(null);
-  const shapesRef = useRef<OctaveShape[]>([]);
 
-  // Initialize shapes
-  useEffect(() => {
-    if (shapesRef.current.length === 0) {
-      shapesRef.current = Array(NUM_OCTAVES).fill(null).map((_, octave) => {
+  const shapes = useMemo<OctaveShape[]>(
+    () =>
+      Array.from({ length: NUM_OCTAVES }, () => {
         const geometry = new THREE.BufferGeometry();
+        const positions = new THREE.BufferAttribute(new Float32Array(MAX_VERTICES * 3), 3);
+        positions.setUsage(THREE.DynamicDrawUsage);
+        geometry.setAttribute("position", positions);
+        geometry.setIndex(FAN_INDICES);
+        geometry.setDrawRange(0, 0);
         const material = new THREE.MeshPhysicalMaterial({
-          // color: new THREE.Color().setHSL(0.6 + (octave / NUM_OCTAVES) * 0.4, 0.6, 0.5),
-          color: getColor({
-            power:(octave / NUM_OCTAVES), 
-            colorScale, 
-            colorNumberScale:() => octave / NUM_OCTAVES, 
-            degrees:0
-          }),
           transparent: true,
           side: THREE.DoubleSide,
           depthWrite: true,
         });
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.visible = false;
+        mesh.frustumCulled = false;
+        return { geometry, positions, mesh, material, currentPoints: [], targetPoints: [] };
+      }),
+    []
+  );
 
-        return {
-          geometry,
-          mesh: new THREE.Mesh(geometry, material),
-          currentPoints: [],
-          targetPoints: []
-        };
-      });
-
-      // Add meshes to group
-      if (groupRef.current) {
-        shapesRef.current.forEach(shape => {
-          groupRef.current!.add(shape.mesh);
-        });
-      }
-    }
-
+  useEffect(() => {
+    const group = groupRef.current;
+    shapes.forEach((shape) => group?.add(shape.mesh));
     return () => {
-      shapesRef.current.forEach(shape => {
+      shapes.forEach((shape) => {
+        group?.remove(shape.mesh);
         shape.geometry.dispose();
-        (shape.mesh.material as THREE.MeshPhysicalMaterial).dispose();
+        shape.material.dispose();
       });
     };
-  }, []);
+  }, [shapes]);
 
-  // Update target positions when data changes
+  // Colours follow the selected colour scale (they used to be fixed at mount).
   useEffect(() => {
-    if (!groupRef.current) return;
+    shapes.forEach((shape, octave) => shape.material.color.set(octaveColor(octave, colorScale)));
+  }, [shapes, colorScale]);
 
-    // Reset all shape points
-    shapesRef.current.forEach(shape => {
+  useEffect(() => {
+    shapes.forEach((shape) => {
       shape.targetPoints = [];
     });
 
-    // Group points by octave
     const pointsByOctave = new Map<number, THREE.Vector3[]>();
-    
     points.forEach(({ position, octave }) => {
-      if (!pointsByOctave.has(octave)) {
-        pointsByOctave.set(octave, []);
-      }
+      if (!pointsByOctave.has(octave)) pointsByOctave.set(octave, []);
       pointsByOctave.get(octave)!.push(position.clone());
     });
 
-    // Update shape target points
     pointsByOctave.forEach((octavePoints, octave) => {
-      const shape = shapesRef.current[octave];
-      if (shape && octavePoints.length > 0) {
-        // Calculate center
-        const center = new THREE.Vector3();
-        octavePoints.forEach(p => center.add(p));
-        center.divideScalar(octavePoints.length);
-        
-        // Normalize distances from center and sort by angle
-        const normalizedPoints = octavePoints.map(p => {
+      const shape = shapes[octave];
+      if (!shape || octavePoints.length === 0) return;
+
+      const center = new THREE.Vector3();
+      octavePoints.forEach((p) => center.add(p));
+      center.divideScalar(octavePoints.length);
+
+      const normalizedPoints = octavePoints
+        .map((p) => {
           const dir = p.clone().sub(center);
-          const dist = dir.length();
-          // Smooth out extreme distances while maintaining relative relationships
-          const smoothDist = Math.pow(dist, 0.7); // Less extreme variations
+          const smoothDist = Math.pow(dir.length(), 0.7);
           return center.clone().add(dir.normalize().multiplyScalar(smoothDist));
-        }).sort((a, b) => {
-          const angleA = Math.atan2(a.z - center.z, a.x - center.x);
-          const angleB = Math.atan2(b.z - center.z, b.x - center.x);
-          return angleA - angleB;
-        });
+        })
+        .sort(
+          (a, b) =>
+            Math.atan2(a.z - center.z, a.x - center.x) - Math.atan2(b.z - center.z, b.x - center.x)
+        );
 
-        // Add interpolated points for smoother shape
-        const smoothedPoints: THREE.Vector3[] = [];
-        const numInterpolatedPoints = Math.min(32, Math.max(16, normalizedPoints.length * 2));
-        
-        for (let i = 0; i < numInterpolatedPoints; i++) {
-          const t = (i / numInterpolatedPoints) * normalizedPoints.length;
-          const index = Math.floor(t);
-          const nextIndex = (index + 1) % normalizedPoints.length;
-          const alpha = t - index;
-          
-          const point = normalizedPoints[index].clone().lerp(
-            normalizedPoints[nextIndex], 
-            alpha
-          );
-          
-          // Add slight variation to prevent perfectly straight lines
-          const noise = new THREE.Vector3(
-            (Math.random() - 0.5) * 0.02,
-            0,
-            (Math.random() - 0.5) * 0.02
-          );
-          point.add(noise);
-          
-          smoothedPoints.push(point);
-        }
-
-        // Put center point first, then smoothed points, then close the loop
-        shape.targetPoints = [
-          center.clone(),
-          ...smoothedPoints,
-          smoothedPoints[0].clone()
-        ];
+      const smoothedPoints: THREE.Vector3[] = [];
+      const numInterpolatedPoints = Math.min(MAX_RIM_POINTS, Math.max(16, normalizedPoints.length * 2));
+      for (let i = 0; i < numInterpolatedPoints; i++) {
+        const t = (i / numInterpolatedPoints) * normalizedPoints.length;
+        const index = Math.floor(t);
+        const nextIndex = (index + 1) % normalizedPoints.length;
+        const point = normalizedPoints[index].clone().lerp(normalizedPoints[nextIndex], t - index);
+        point.x += (Math.random() - 0.5) * 0.02;
+        point.z += (Math.random() - 0.5) * 0.02;
+        smoothedPoints.push(point);
       }
+
+      shape.targetPoints = [center.clone(), ...smoothedPoints, smoothedPoints[0].clone()];
     });
 
-    // Initialize current points if needed
-    shapesRef.current.forEach(shape => {
+    shapes.forEach((shape) => {
       if (shape.currentPoints.length === 0 && shape.targetPoints.length > 0) {
-        shape.currentPoints = shape.targetPoints.map(p => p.clone());
+        shape.currentPoints = shape.targetPoints.map((p) => p.clone());
       }
     });
-  }, [points]);
+  }, [points, shapes]);
 
-  // Animate shapes each frame
-  useFrame((state) => {
-    if (!groupRef.current) return;
-
-    shapesRef.current.forEach((shape) => {
-      // Only hide if we definitely don't have enough points for a triangle
+  useFrame(() => {
+    shapes.forEach((shape) => {
       if (shape.targetPoints.length < 3) {
         shape.mesh.visible = false;
         return;
       }
-
-      // Make sure shape is visible
       shape.mesh.visible = true;
 
-      // Ensure current points array matches target points array length
       while (shape.currentPoints.length < shape.targetPoints.length) {
-        // Initialize new points at the center position instead of target position
-        const centerPoint = shape.targetPoints[0].clone();
-        shape.currentPoints.push(centerPoint);
+        shape.currentPoints.push(shape.targetPoints[0].clone());
       }
-      shape.currentPoints = shape.currentPoints.slice(0, shape.targetPoints.length);
+      shape.currentPoints.length = shape.targetPoints.length;
 
-      // Lerp points
-      let needsUpdate = false;
+      shape.currentPoints.forEach((point, i) => point.lerp(shape.targetPoints[i], LERP_FACTOR));
+
+      // Write into the preallocated buffer instead of allocating a new one per frame.
+      const array = shape.positions.array as Float32Array;
       shape.currentPoints.forEach((point, i) => {
-        const target = shape.targetPoints[i];
-        if (target && !point.equals(target)) {
-          point.lerp(target, LERP_FACTOR);
-          needsUpdate = true;
-        }
+        array[i * 3] = point.x;
+        array[i * 3 + 1] = point.y;
+        array[i * 3 + 2] = point.z;
       });
-
-      // Update geometry even if points haven't changed
-      // Create positions array
-      const positions = new Float32Array(shape.currentPoints.length * 3);
-      shape.currentPoints.forEach((point, i) => {
-        positions[i * 3] = point.x;
-        positions[i * 3 + 1] = point.y;
-        positions[i * 3 + 2] = point.z;
-      });
-
-      shape.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-      
-      // Create indices for triangulation from center
-      const indices = [];
-      for (let i = 1; i < shape.currentPoints.length - 1; i++) {
-        indices.push(0, i, i + 1);
+      // Collapse unused vertices onto the centre so they add nothing to the normals.
+      const centre = shape.currentPoints[0];
+      for (let i = shape.currentPoints.length; i < MAX_VERTICES; i++) {
+        array[i * 3] = centre.x;
+        array[i * 3 + 1] = centre.y;
+        array[i * 3 + 2] = centre.z;
       }
-      
-      shape.geometry.setIndex(indices);
+      shape.positions.needsUpdate = true;
+      shape.geometry.setDrawRange(0, Math.max(0, (shape.currentPoints.length - 2) * 3));
       shape.geometry.computeVertexNormals();
-
-      // Update shader time
-      (shape.mesh.material as any).time = state.clock.elapsedTime;
+      shape.geometry.computeBoundingSphere();
     });
   });
 
   return <group ref={groupRef} />;
-}; 
+};

@@ -1,49 +1,28 @@
-import React,{ useRef, useEffect, useState } from 'react';
-import { useFrame } from '@react-three/fiber';
-import * as THREE from 'three';
-import { scalePow } from 'd3-scale';
-import { BUFFER_SIZE, noteAngles, NoteName } from '../utils/consts';
-import {centsToAngleOffset } from '../utils/drawVisual';
-import { SoundFlower } from './SoundFlower';
-import { ColorScale } from '../utils/colors';
+import React, { useRef, useEffect, useMemo } from "react";
+import { useFrame } from "@react-three/fiber";
+import * as THREE from "three";
+import { scalePow } from "d3-scale";
+import { AmpArray, BUFFER_SIZE, OCTAVE_SPACING_3D } from "../utils/consts";
+import { noteAngleRad } from "../utils/notes";
+import { SoundFlower } from "./SoundFlower";
+import { ColorScale } from "../utils/colors";
 
 const CIRCLE_RADIUS = 3;
-const OCTAVE_SPACING = 1.5;
 const NUM_OCTAVES = 10;
-const TOTAL_INSTANCES = BUFFER_SIZE;
-const LERP_FACTOR = 0.08; 
+// The analysis produces ~480 log-spaced bins at most, so 512 instances per
+// group is plenty. (It used to allocate BUFFER_SIZE * 2 = 8192.)
+const INSTANCES_PER_GROUP = 512;
+const TOTAL_INSTANCES = INSTANCES_PER_GROUP * 2;
+const LERP_FACTOR = 0.08;
+const PARKED = new THREE.Vector3(0, -1000, 0);
 
-// Create scales for mapping
-const radiusScale = scalePow()
-  .exponent(.6)
-  .domain([0, BUFFER_SIZE])
-  .range([0.15, 2]).clamp(true);
-// Scale for point size
-const sizeScale = scalePow()
-  .exponent(1.1)
-  .domain([0, BUFFER_SIZE])
-  .range([0.3, 2.0]).clamp(true);
-
-// Scale for stick radius
-const stickRadiusScale = scalePow()
-  .exponent(0.8)
-  .domain([0, BUFFER_SIZE])
-  .range([0.1, 1]);
-
+const radiusScale = scalePow().exponent(0.6).domain([0, BUFFER_SIZE]).range([0.15, 2]).clamp(true);
+const sizeScale = scalePow().exponent(1.1).domain([0, BUFFER_SIZE]).range([0.3, 2.0]).clamp(true);
+const stickRadiusScale = scalePow().exponent(0.8).domain([0, BUFFER_SIZE]).range([0.1, 1]);
 
 interface PointCloudProps {
-  fullSpectrumAmps: Array<{
-    note: string;
-    octave: number;
-    cents: number;
-    amplitude: number;
-  }>;
-  percussiveAmps?: Array<{
-    note: string;
-    octave: number;
-    cents: number;
-    amplitude: number;
-  }>;
+  fullSpectrumAmps: AmpArray;
+  percussiveAmps?: AmpArray;
   pointSize: number;
   stickRadius: number;
   showSoundFlower: boolean;
@@ -60,224 +39,185 @@ interface PointData {
   isActive: boolean;
 }
 
-export const PointCloud = ({ fullSpectrumAmps, percussiveAmps, pointSize, stickRadius, showSoundFlower, colorScale }: PointCloudProps) => {
+type LaidOutPoint = {
+  position: THREE.Vector3;
+  octave: number;
+  size: number;
+  color: THREE.Color;
+};
+
+/** Position, size and colour for each loud-enough point, loudest first. */
+const layoutPoints = (points: AmpArray | undefined): LaidOutPoint[] => {
+  if (!points) return [];
+  return points
+    .filter(
+      (point) =>
+        point &&
+        point.note &&
+        point.amplitude > BUFFER_SIZE / 1000 &&
+        point.octave >= 0 &&
+        point.octave < NUM_OCTAVES
+    )
+    .sort((a, b) => b.amplitude - a.amplitude)
+    .slice(0, INSTANCES_PER_GROUP)
+    .map(({ note, octave, amplitude, cents }) => {
+      const angle = noteAngleRad(note, cents);
+      const scaledRadius = CIRCLE_RADIUS * radiusScale(amplitude);
+      return {
+        position: new THREE.Vector3(
+          Math.cos(angle) * scaledRadius,
+          octave * OCTAVE_SPACING_3D,
+          Math.sin(angle) * scaledRadius
+        ),
+        octave,
+        size: sizeScale(amplitude),
+        color: new THREE.Color().setHSL(
+          0.6 + (octave / NUM_OCTAVES) * 0.4,
+          Math.min(1, amplitude / BUFFER_SIZE),
+          0.5
+        ),
+      };
+    });
+};
+
+export const PointCloud = ({
+  fullSpectrumAmps,
+  percussiveAmps,
+  pointSize,
+  stickRadius,
+  showSoundFlower,
+  colorScale,
+}: PointCloudProps) => {
   const pointsRef = useRef<THREE.InstancedMesh>(null);
   const sticksRef = useRef<THREE.InstancedMesh>(null);
-  const pointsDataRef = useRef<PointData[]>([]);
-  const tempObject = new THREE.Object3D();
-  const [activePoints, setActivePoints] = useState<Array<{position: THREE.Vector3, octave: number}>>([]);
-  
-  // Create geometries
-  const sphereGeometry = new THREE.SphereGeometry(pointSize, 8, 8);
-  const stickGeometry = new THREE.CylinderGeometry(stickRadius, stickRadius, 1, 4);
-  stickGeometry.translate(0, 0.5, 0); // Move pivot to end
-  
-  // Create materials
-  const sphereMaterial = new THREE.MeshStandardMaterial({ 
-    vertexColors: true,
-    metalness: 0.3,
-    roughness: 0.8,
-    opacity: 1,
-  });
-  
-  const stickMaterial = new THREE.MeshStandardMaterial({ 
-    vertexColors: true,
-    metalness: 0.3,
-    roughness: 0.8,
-    opacity: 1,
-  });
 
+  // Geometries and materials are memoised: creating them inline made React
+  // Three Fiber rebuild both instanced meshes on every audio frame.
+  const sphereGeometry = useMemo(() => new THREE.SphereGeometry(pointSize, 8, 8), [pointSize]);
+  const stickGeometry = useMemo(() => {
+    const geometry = new THREE.CylinderGeometry(stickRadius, stickRadius, 1, 4);
+    geometry.translate(0, 0.5, 0); // pivot at the base
+    return geometry;
+  }, [stickRadius]);
+  const sphereMaterial = useMemo(
+    () => new THREE.MeshStandardMaterial({ metalness: 0.3, roughness: 0.8 }),
+    []
+  );
+  const stickMaterial = useMemo(
+    () => new THREE.MeshStandardMaterial({ metalness: 0.3, roughness: 0.8 }),
+    []
+  );
+  useEffect(() => () => sphereGeometry.dispose(), [sphereGeometry]);
+  useEffect(() => () => stickGeometry.dispose(), [stickGeometry]);
+  useEffect(
+    () => () => {
+      sphereMaterial.dispose();
+      stickMaterial.dispose();
+    },
+    [sphereMaterial, stickMaterial]
+  );
 
-  // Initialize points data
-  useEffect(() => {
-    if (pointsDataRef.current.length === 0) {
-      // Double the instances to handle both melodic and percussive points
-      pointsDataRef.current = Array(TOTAL_INSTANCES * 2).fill(null).map(() => ({
-        targetPosition: new THREE.Vector3(0, -1000, 0),
-        currentPosition: new THREE.Vector3(0, -1000, 0),
+  const pointsData = useMemo<PointData[]>(
+    () =>
+      Array.from({ length: TOTAL_INSTANCES }, () => ({
+        targetPosition: PARKED.clone(),
+        currentPosition: PARKED.clone(),
         targetScale: new THREE.Vector3(1, 1, 1),
         currentScale: new THREE.Vector3(1, 1, 1),
         targetColor: new THREE.Color(0, 0, 0),
         currentColor: new THREE.Color(0, 0, 0),
-        isActive: false
-      }));
-    }
-  }, []);
+        isActive: false,
+      })),
+    []
+  );
 
-  // Update target positions when data changes
+  const melodicLayout = useMemo(() => layoutPoints(fullSpectrumAmps), [fullSpectrumAmps]);
+  const percussiveLayout = useMemo(() => layoutPoints(percussiveAmps), [percussiveAmps]);
+  // Passed straight to SoundFlower; no extra state update and re-render.
+  const flowerPoints = useMemo(
+    () => [...melodicLayout, ...percussiveLayout].map(({ position, octave }) => ({ position, octave })),
+    [melodicLayout, percussiveLayout]
+  );
+
   useEffect(() => {
-    if (!pointsRef.current || !sticksRef.current) return;
-
-    // Reset all points
-    pointsDataRef.current.forEach(point => {
+    pointsData.forEach((point) => {
       point.isActive = false;
-      point.targetPosition.set(0, -1000, 0);
+      point.targetPosition.copy(PARKED);
       point.targetScale.set(1, 1, 1);
       point.targetColor.set(0, 0, 0);
     });
-
-    // Collect points for hull
-    const activePoints: Array<{position: THREE.Vector3, octave: number}> = [];
-
-    // Process melodic points
-    const processPoints = (points: typeof fullSpectrumAmps, startIndex: number) => {
-      if (!points) return;
-
-      const yOffset = -0;
-
-      // Filter points more aggressively
-      const validPoints = points.filter(point => 
-        point && 
-        point.note && 
-        point.amplitude > BUFFER_SIZE / 1000 &&
-        point.octave >= 0 && 
-        point.octave < NUM_OCTAVES
-      ).sort((a, b) => b.amplitude - a.amplitude); 
-      
-      validPoints.forEach((point, index) => {
-        if (index >= TOTAL_INSTANCES) return;
-
-        const { note, octave, amplitude, cents } = point;
-        const noteIndex = Object.values(NoteName).indexOf(note as NoteName);
-        if (noteIndex === -1) return;
-
-        const noteValue = point.note.includes("#") 
-          ? point.note.slice(0, 2)
-          : point.note.slice(0, 1);
-        
-        const degrees = noteAngles[noteValue as keyof typeof noteAngles] - 60;
-        const finalAngle = (degrees / 360) * Math.PI * 2 + centsToAngleOffset(cents);
-
-        const scaledRadius = CIRCLE_RADIUS * radiusScale(amplitude);
-        const pointSize = sizeScale(amplitude);
-        
-        const x = Math.cos(finalAngle) * scaledRadius;
-        const z = Math.sin(finalAngle) * scaledRadius;
-        const y = octave * OCTAVE_SPACING + yOffset;
-
-        const color = new THREE.Color().setHSL(0.6 + (octave / NUM_OCTAVES) * 0.4, amplitude/BUFFER_SIZE, 0.5);
-        
-        const newPoint = pointsDataRef.current[startIndex + index];
-        newPoint.isActive = true;
-        newPoint.targetPosition.set(x, y, z);
-        newPoint.targetScale.set(pointSize, pointSize, pointSize);
-        newPoint.targetColor.copy(color);
-
-        // Add to active points for hull
-        activePoints.push({
-          position: new THREE.Vector3(x, y, z),
-          octave
-        });
+    const assign = (layout: LaidOutPoint[], startIndex: number) => {
+      layout.forEach(({ position, size, color }, index) => {
+        const point = pointsData[startIndex + index];
+        point.isActive = true;
+        point.targetPosition.copy(position);
+        point.targetScale.setScalar(size);
+        point.targetColor.copy(color);
       });
     };
+    assign(melodicLayout, 0);
+    assign(percussiveLayout, INSTANCES_PER_GROUP);
+  }, [melodicLayout, percussiveLayout, pointsData]);
 
-    processPoints(fullSpectrumAmps, 0);
-    processPoints(percussiveAmps || [], TOTAL_INSTANCES);
-    
-    // Update active points state
-    setActivePoints(activePoints);
+  const scratch = useMemo(
+    () => ({
+      object: new THREE.Object3D(),
+      stickStart: new THREE.Vector3(),
+      stickVector: new THREE.Vector3(),
+      up: new THREE.Vector3(0, 1, 0),
+      stickColor: new THREE.Color(),
+    }),
+    []
+  );
 
-  }, [fullSpectrumAmps, percussiveAmps]);
-
-  // Animate points and sticks each frame
   useFrame(() => {
-    if (!pointsRef.current || !sticksRef.current) return;
+    const points = pointsRef.current;
+    const sticks = sticksRef.current;
+    if (!points || !sticks) return;
+    const { object, stickStart, stickVector, up, stickColor } = scratch;
 
-    let needsUpdate = false;
-    const colors: number[] = [];
-    const stickColors: number[] = [];
-    
-    pointsDataRef.current.forEach((point, index) => {
-      const positionChanged = !point.currentPosition.equals(point.targetPosition);
-      const scaleChanged = !point.currentScale.equals(point.targetScale);
-      const colorChanged = !point.currentColor.equals(point.targetColor);
-      
-      if (positionChanged || scaleChanged || colorChanged) {
-        point.currentPosition.lerp(point.targetPosition, LERP_FACTOR);
-        point.currentScale.lerp(point.targetScale, LERP_FACTOR);
-        point.currentColor.lerp(point.targetColor, LERP_FACTOR);
-        needsUpdate = true;
-      }
+    pointsData.forEach((point, index) => {
+      point.currentPosition.lerp(point.targetPosition, LERP_FACTOR);
+      point.currentScale.lerp(point.targetScale, LERP_FACTOR);
+      point.currentColor.lerp(point.targetColor, LERP_FACTOR);
 
-      // Set colors based on whether point is active
+      object.position.copy(point.currentPosition);
+      object.scale.copy(point.currentScale);
+      object.quaternion.identity();
+      object.updateMatrix();
+      points.setMatrixAt(index, object.matrix);
+      points.setColorAt(index, point.isActive ? point.currentColor : stickColor.setRGB(0, 0, 0));
+
       if (point.isActive) {
-        colors[index * 4] = point.currentColor.r;
-        colors[index * 4 + 1] = point.currentColor.g;
-        colors[index * 4 + 2] = point.currentColor.b;
-        colors[index * 4 + 3] = 1.0; // Full opacity for active points
-        
-        // Make sticks slightly darker version of the same color
-        stickColors[index * 4] = point.currentColor.r * 0.7;
-        stickColors[index * 4 + 1] = point.currentColor.g * 0.7;
-        stickColors[index * 4 + 2] = point.currentColor.b * 0.7;
-        stickColors[index * 4 + 3] = 0.4; // Maintain stick transparency
+        stickStart.set(0, point.currentPosition.y, 0);
+        stickVector.subVectors(point.currentPosition, stickStart);
+        const stickLength = stickVector.length();
+        const stickScale = point.currentScale.x * stickRadiusScale(point.currentScale.x * 100);
+        object.position.copy(stickStart);
+        object.scale.set(stickScale, Math.max(stickLength, 1e-4), stickScale);
+        if (stickLength > 1e-6) object.quaternion.setFromUnitVectors(up, stickVector.normalize());
+        sticks.setColorAt(index, stickColor.copy(point.currentColor).multiplyScalar(0.7));
       } else {
-        // Make inactive points fully transparent
-        colors[index * 4] = 0;
-        colors[index * 4 + 1] = 0;
-        colors[index * 4 + 2] = 0;
-        colors[index * 4 + 3] = 0;
-        
-        stickColors[index * 4] = 0;
-        stickColors[index * 4 + 1] = 0;
-        stickColors[index * 4 + 2] = 0;
-        stickColors[index * 4 + 3] = 0;
+        object.position.copy(PARKED);
+        object.scale.set(1, 1, 1);
+        object.quaternion.identity();
+        sticks.setColorAt(index, stickColor.setRGB(0, 0, 0));
       }
-
-      // Update matrices
-      if (needsUpdate) {
-        // Update point
-        tempObject.position.copy(point.currentPosition);
-        tempObject.scale.copy(point.currentScale);
-        tempObject.updateMatrix();
-        pointsRef.current!.setMatrixAt(index, tempObject.matrix);
-
-        // Update stick
-        if (point.isActive) {
-          const stickStart = new THREE.Vector3(0, point.currentPosition.y, 0);
-          const stickEnd = point.currentPosition;
-          
-          const stickVector = new THREE.Vector3().subVectors(stickEnd, stickStart);
-          const stickLength = stickVector.length();
-          const targetDirection = stickVector.normalize();
-          
-          const stickRadius = point.currentScale.x * stickRadiusScale(point.currentScale.x * 100);
-          
-          tempObject.position.copy(stickStart);
-          tempObject.scale.set(stickRadius, stickLength, stickRadius);
-          tempObject.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), targetDirection);
-        } else {
-          tempObject.position.set(0, -1000, 0);
-        }
-        tempObject.updateMatrix();
-        sticksRef.current!.setMatrixAt(index, tempObject.matrix);
-      }
+      object.updateMatrix();
+      sticks.setMatrixAt(index, object.matrix);
     });
 
-    if (needsUpdate) {
-      pointsRef.current.instanceMatrix.needsUpdate = true;
-      sticksRef.current.instanceMatrix.needsUpdate = true;
-      
-      // Update colors with alpha channel (4 components instead of 3)
-      const pointColorAttribute = new THREE.InstancedBufferAttribute(new Float32Array(colors), 4);
-      const stickColorAttribute = new THREE.InstancedBufferAttribute(new Float32Array(stickColors), 4);
-      
-      pointsRef.current.geometry.setAttribute('color', pointColorAttribute);
-      sticksRef.current.geometry.setAttribute('color', stickColorAttribute);
-    }
+    points.instanceMatrix.needsUpdate = true;
+    sticks.instanceMatrix.needsUpdate = true;
+    if (points.instanceColor) points.instanceColor.needsUpdate = true;
+    if (sticks.instanceColor) sticks.instanceColor.needsUpdate = true;
   });
 
   return (
     <group>
-      {showSoundFlower && <SoundFlower points={activePoints}colorScale={colorScale} />}
-      <instancedMesh
-        ref={pointsRef}
-        args={[sphereGeometry, sphereMaterial, TOTAL_INSTANCES * 2]}
-      />
-      <instancedMesh
-        ref={sticksRef}
-        args={[stickGeometry, stickMaterial, TOTAL_INSTANCES * 2]}
-      />
+      {showSoundFlower && <SoundFlower points={flowerPoints} colorScale={colorScale} />}
+      <instancedMesh ref={pointsRef} args={[sphereGeometry, sphereMaterial, TOTAL_INSTANCES]} />
+      <instancedMesh ref={sticksRef} args={[stickGeometry, stickMaterial, TOTAL_INSTANCES]} />
     </group>
   );
-}; 
+};

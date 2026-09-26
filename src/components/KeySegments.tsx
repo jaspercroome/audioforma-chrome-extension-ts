@@ -1,138 +1,93 @@
-import React,{ useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef } from "react";
 import {
-  BufferGeometry,
   Color,
   DoubleSide,
   Euler,
   InstancedMesh,
-  InstancedMeshEventMap,
-  Material,
   Matrix4,
   MeshStandardMaterial,
-  NormalBufferAttributes,
   Quaternion,
   TorusGeometry,
   Vector3,
-} from 'three';
-import { getPathCoords } from '../utils/drawVisual';
-import { BUFFER_SIZE, segmentArc } from '../utils/consts';
-import { useFrame } from '@react-three/fiber';
-import { scaleLinear } from 'd3-scale';
+} from "three";
+import { useFrame } from "@react-three/fiber";
+import { BUFFER_SIZE, NOTES, NoteName, OCTAVE_SPACING_3D, segmentArc } from "../utils/consts";
+import { noteAngleRad } from "../utils/notes";
 
 interface KeySegmentsProps {
   keyOctaveAmplitudes: Record<string, number>;
   highlightColor?: string;
 }
 
-export const KeySegments = ({ keyOctaveAmplitudes, highlightColor = '#32ddef' }: KeySegmentsProps) => {
-  const meshRef =
-    useRef<
-      InstancedMesh<
-        BufferGeometry<NormalBufferAttributes>,
-        Material | Material[],
-        InstancedMeshEventMap
-      >
-    >(null);
-  const baseMatricesRef = useRef<Matrix4[]>([]);
-  const workingMatricesRef = useRef<Matrix4[]>([]);
+const NUM_OCTAVES = 11; // 0-10: the analysis goes up to 20 kHz, which is octave 10
+const SEGMENT_RADIUS = 8;
+const AMPLITUDE_THRESHOLD = BUFFER_SIZE / 100;
+const HIDDEN = new Vector3(0.0001, 0.0001, 0.0001);
+const SHOWN = new Vector3(1, 1, 1);
 
-  const amplitudeScale = scaleLinear()
-    .domain([0, BUFFER_SIZE/2])
-    .range([0, 1]);
+/** One fixed instance per note and octave, so the mesh never has to be rebuilt. */
+const SEGMENTS = Array.from({ length: NUM_OCTAVES }, (_, octave) =>
+  NOTES.map((note) => ({ key: `${note}${octave}`, note: note as NoteName, octave }))
+).flat();
 
-  const baseColor = new Color(0x000000);
-  const highColor = new Color(0x32ddef);
+export const KeySegments = ({ keyOctaveAmplitudes, highlightColor = "#32ddef" }: KeySegmentsProps) => {
+  const meshRef = useRef<InstancedMesh>(null);
+  const amplitudesRef = useRef(keyOctaveAmplitudes);
+  amplitudesRef.current = keyOctaveAmplitudes;
 
-  const AMPLITUDE_THRESHOLD = BUFFER_SIZE/100;
+  // Geometry and material are created once. Creating them inline (as before)
+  // made React Three Fiber rebuild the instanced mesh on every render.
+  const geometry = useMemo(() => new TorusGeometry(SEGMENT_RADIUS, 0.1, 10, 100, segmentArc), []);
+  const material = useMemo(
+    // White base so the per-instance colour is the colour you see. The old
+    // code multiplied the picked colour by a hard-coded cyan.
+    () => new MeshStandardMaterial({ color: 0xffffff, side: DoubleSide }),
+    []
+  );
+  useEffect(
+    () => () => {
+      geometry.dispose();
+      material.dispose();
+    },
+    [geometry, material]
+  );
 
-  useEffect(() => {
-    const instanceCount = Object.keys(keyOctaveAmplitudes).length;
-    if (!meshRef.current || instanceCount === 0) {
-      return;
-    } else {
-      baseMatricesRef.current = Object.keys(keyOctaveAmplitudes).map(
-        (noteOctave) => {
-          const {
-            x,
-            y: twoDZ,
-            threeCoords,
-            degrees,
-          } = getPathCoords({noteOctave, power: 10, width: 5, radius: 5});
-          const position = new Vector3(x, threeCoords.y, twoDZ);
-          const rotation = new Euler(
-            Math.PI / 2, // Tilt the torus to be horizontal
-            0,
-            (degrees / 360) * (Math.PI * 2), // Rotate around the circle
-          );
-          const quaternion = new Quaternion();
-          quaternion.setFromEuler(rotation);
+  const baseMatrices = useMemo(
+    () =>
+      SEGMENTS.map(({ note, octave }) => {
+        // Centre each arc on the same angle the point cloud uses for the note.
+        const angle = noteAngleRad(note) - segmentArc / 2;
+        const rotation = new Euler(Math.PI / 2, 0, angle);
+        return new Matrix4().compose(
+          new Vector3(0, octave * OCTAVE_SPACING_3D, 0),
+          new Quaternion().setFromEuler(rotation),
+          SHOWN
+        );
+      }),
+    []
+  );
 
-          const scale = new Vector3(1, 1, 1);
-          const matrix = new Matrix4();
-
-          matrix.compose(position, quaternion, scale);
-
-          return matrix;
-        },
-      );
-
-      workingMatricesRef.current = baseMatricesRef.current.map((m) =>
-        m.clone(),
-      );
-
-      baseMatricesRef.current.forEach((matrix, i) => {
-        meshRef.current?.setMatrixAt(i, matrix);
-      });
-
-      meshRef.current.instanceMatrix.needsUpdate = true;
-    }
-  }, [keyOctaveAmplitudes]);
+  const baseColor = useMemo(() => new Color(0x000000), []);
+  const highColor = useMemo(() => new Color(highlightColor), [highlightColor]);
+  const scratch = useMemo(() => ({ matrix: new Matrix4(), color: new Color() }), []);
 
   useFrame(() => {
-    if (!meshRef.current || baseMatricesRef.current.length === 0) {
-      return;
-    }
-    Object.entries(keyOctaveAmplitudes).forEach(([, power], i) => {
-      const scale = amplitudeScale(power);
-      
-      // Start with the base matrix
-      workingMatricesRef.current[i].copy(baseMatricesRef.current[i]);
-
-      // If power is below threshold, scale the instance down to nearly invisible
-      const scaleVector = new Vector3(
-        power > AMPLITUDE_THRESHOLD ? 1 : 0.0001,
-        power > AMPLITUDE_THRESHOLD ? 1 : 0.0001,
-        power > AMPLITUDE_THRESHOLD ? 1 : 0.0001
-      );
-      workingMatricesRef.current[i].scale(scaleVector);
-
-      const material = meshRef.current?.material as MeshStandardMaterial;
-      if (material) {
-        const color = baseColor.clone().lerp(highColor, scale)
-        meshRef.current?.setColorAt(i, color)
-      }
-
-      meshRef.current?.setMatrixAt(i, workingMatricesRef.current[i]);
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    const amplitudes = amplitudesRef.current;
+    SEGMENTS.forEach(({ key }, i) => {
+      const power = Math.max(0, amplitudes[key] ?? 0);
+      scratch.matrix.copy(baseMatrices[i]).scale(power > AMPLITUDE_THRESHOLD ? SHOWN : HIDDEN);
+      mesh.setMatrixAt(i, scratch.matrix);
+      scratch.color.copy(baseColor).lerp(highColor, Math.min(1, power / (BUFFER_SIZE / 2)));
+      mesh.setColorAt(i, scratch.color);
     });
-    meshRef.current.instanceMatrix.needsUpdate = true;
+    mesh.instanceMatrix.needsUpdate = true;
+    // Without this, colour changes after the first frame never reach the GPU.
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   });
 
-  const geometry = new TorusGeometry(8, 0.1, 10, 100, segmentArc);
-  const material = new MeshStandardMaterial({
-    color: new Color(highlightColor),
-    side: DoubleSide,
-  });
-
-  return (
-      <instancedMesh
-        ref={meshRef}
-        args={[
-          geometry,
-          material,
-          Math.max(Object.keys(keyOctaveAmplitudes).length, 1),
-        ]}
-      />
-  );
+  return <instancedMesh ref={meshRef} args={[geometry, material, SEGMENTS.length]} />;
 };
 
 export default KeySegments;
