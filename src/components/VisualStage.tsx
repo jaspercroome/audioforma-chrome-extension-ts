@@ -3,8 +3,8 @@ import Meyda from "meyda";
 import { OrbitControls, PerspectiveCamera } from "@react-three/drei";
 import { Canvas } from "@react-three/fiber";
 
-import { AudioFeatures, AmpArray, BUFFER_SIZE, defaultVisualSettings, FEATURE_EXTRACTORS } from "../utils/consts";
-import { HarmonicMask, processPowerSpectrum } from "../utils/processPowerSpectrum";
+import { AudioFeatures, AmpArray, BUFFER_SIZE, defaultVisualSettings, FEATURE_EXTRACTORS, HOP_SIZE } from "../utils/consts";
+import { harmonicHistoryFrames, HarmonicMask, processPowerSpectrum } from "../utils/processPowerSpectrum";
 import { ColorScale } from "../utils/colors";
 import { classicRadius } from "../utils/drawVisual";
 
@@ -53,7 +53,6 @@ export const VisualStage = ({ audio, backgroundStream, initialStyle = "orb" }: V
   const [visualStyle, setVisualStyle] = useState<VisualStyle>(initialStyle);
   const [chroma, setChroma] = useState<number[]>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const harmonicMask = useMemo(() => new HarmonicMask(), []);
   // The orb reads analysis from a ref inside its render loop, so audio frames
   // don't re-render the React tree while it's showing.
   const orbFrameRef = useRef<OrbFrame>(emptyOrbFrame());
@@ -66,9 +65,10 @@ export const VisualStage = ({ audio, backgroundStream, initialStyle = "orb" }: V
 
   useEffect(() => {
     if (!audio) return;
-    harmonicMask.reset();
+    const hopSeconds = HOP_SIZE / audio.context.sampleRate;
+    const harmonicMask = new HarmonicMask(harmonicHistoryFrames(hopSeconds));
     const orbAnalyzer = new OrbAnalyzer({
-      hopSeconds: BUFFER_SIZE / audio.context.sampleRate,
+      hopSeconds,
       sampleRate: audio.context.sampleRate,
       fftSize: BUFFER_SIZE,
     });
@@ -82,6 +82,7 @@ export const VisualStage = ({ audio, backgroundStream, initialStyle = "orb" }: V
       audioContext: audio.context as AudioContext,
       source: audio.source,
       bufferSize: BUFFER_SIZE,
+      hopSize: HOP_SIZE,
       featureExtractors: [...FEATURE_EXTRACTORS],
       callback: (features: AudioFeatures) => {
         try {
@@ -109,7 +110,7 @@ export const VisualStage = ({ audio, backgroundStream, initialStyle = "orb" }: V
       analyzer.stop();
       audio.source.disconnect(tap);
     };
-  }, [audio, harmonicMask]);
+  }, [audio]);
 
   const scale = `${(1 / devicePixelRatio) * 100}%`;
 
@@ -134,7 +135,7 @@ export const VisualStage = ({ audio, backgroundStream, initialStyle = "orb" }: V
       {visualStyle === "orb" ? (
         <OrbScene
           frameRef={orbFrameRef}
-          settings={{ mood: settings.orbMood, autoRotate: settings.orbAutoRotate }}
+          settings={{ mood: settings.orbMood, autoRotate: settings.orbAutoRotate, spread: settings.orbSpread }}
         />
       ) : visualStyle === "3d" ? (
         <Canvas>

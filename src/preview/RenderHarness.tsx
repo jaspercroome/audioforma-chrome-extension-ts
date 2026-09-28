@@ -64,7 +64,7 @@ export const RenderHarness = () => {
   return (
     <OrbScene
       frameRef={frameRef}
-      settings={{ mood: true, autoRotate: false }}
+      settings={{ mood: true, autoRotate: false, spread: 1 }}
       renderMode
       onCreated={(state) => {
         glRef.current = state.gl;

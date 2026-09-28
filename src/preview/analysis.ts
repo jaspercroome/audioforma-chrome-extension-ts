@@ -1,10 +1,16 @@
 import Meyda from "meyda";
-import { AudioFeatures, BUFFER_SIZE, FEATURE_EXTRACTORS } from "../utils/consts";
-import { HarmonicMask, processPowerSpectrum } from "../utils/processPowerSpectrum";
+import { AudioFeatures, BUFFER_SIZE, FEATURE_EXTRACTORS, HOP_SIZE } from "../utils/consts";
+import { harmonicHistoryFrames, HarmonicMask, processPowerSpectrum } from "../utils/processPowerSpectrum";
 import { emptyOrbFrame, OrbAnalyzer, OrbFrame } from "../utils/orbAnalysis";
 import { LowBandAnalyzer, LOW_FFT_SIZE } from "../utils/lowBand";
 
-export type Timeline = { frames: OrbFrame[]; hopSeconds: number; duration: number };
+export type Timeline = {
+  frames: OrbFrame[];
+  hopSeconds: number;
+  /** When the first frame lands: a frame is ready once its whole buffer has played. */
+  firstFrameSeconds: number;
+  duration: number;
+};
 
 /**
  * Run the extension's analysis over a whole buffer, frame by frame, exactly as
@@ -16,22 +22,22 @@ export const analyzeBuffer = async (
   onProgress?: (fraction: number) => void
 ): Promise<Timeline> => {
   const sampleRate = buffer.sampleRate;
-  const hopSeconds = BUFFER_SIZE / sampleRate;
+  const hopSeconds = HOP_SIZE / sampleRate;
   const signal = buffer.getChannelData(0); // Meyda's analyzer reads channel 0 too
-  const mask = new HarmonicMask();
+  const mask = new HarmonicMask(harmonicHistoryFrames(hopSeconds));
   const orb = new OrbAnalyzer({ hopSeconds, sampleRate, fftSize: BUFFER_SIZE });
   const lowBand = new LowBandAnalyzer(sampleRate);
   Meyda.bufferSize = BUFFER_SIZE;
   Meyda.sampleRate = sampleRate;
 
   const frames: OrbFrame[] = [];
-  const count = Math.floor(signal.length / BUFFER_SIZE);
+  const count = Math.floor((signal.length - BUFFER_SIZE) / HOP_SIZE) + 1;
   for (let i = 0; i < count; i++) {
-    const chunk = signal.slice(i * BUFFER_SIZE, (i + 1) * BUFFER_SIZE);
+    const chunk = signal.slice(i * HOP_SIZE, i * HOP_SIZE + BUFFER_SIZE);
     const features = Meyda.extract([...FEATURE_EXTRACTORS], chunk) as unknown as AudioFeatures;
     const { fullSpectrumAmps } = processPowerSpectrum(features, { sampleRate }, mask);
     // The same last-16384-samples window the live AnalyserNode tap provides.
-    const end = (i + 1) * BUFFER_SIZE;
+    const end = i * HOP_SIZE + BUFFER_SIZE;
     const recent = signal.subarray(Math.max(0, end - LOW_FFT_SIZE), end);
     frames.push(orb.update(fullSpectrumAmps, features, lowBand.analyze(recent)));
     if (i % 24 === 23) {
@@ -40,12 +46,12 @@ export const analyzeBuffer = async (
     }
   }
   onProgress?.(1);
-  return { frames, hopSeconds, duration: buffer.duration };
+  return { frames, hopSeconds, firstFrameSeconds: BUFFER_SIZE / sampleRate, duration: buffer.duration };
 };
 
 /** Latest analysis frame available at time `t` (a frame lands once its buffer has filled). */
 export const frameAt = (timeline: Timeline, t: number): OrbFrame => {
-  const index = Math.floor(t / timeline.hopSeconds) - 1;
+  const index = Math.floor((t - timeline.firstFrameSeconds) / timeline.hopSeconds);
   if (index < 0 || timeline.frames.length === 0) return emptyOrbFrame();
   return timeline.frames[Math.min(index, timeline.frames.length - 1)];
 };

@@ -72,33 +72,50 @@ Load `dist` directory
 
 ## Orb mode
 
-The default view. A glass orb floats in a white studio; every note is a vein
-wrapped around it.
+The default view. A glass orb floats in a white studio. Every note in every
+octave has its own vein (12 notes × 8 octaves = 96), and the orb is a chart
+with three axes:
 
-- **Veins are notes.** 36 veins: 12 pitch classes in three registers. Low
-  notes (up to B3) hug the glass as thick veins; mid (C4–B5) and high (C6 and
-  up) notes float further out and get thinner.
-- **Colour is the note's place on the circle of fifths**, one hue per step,
-  warm on the sharp side (G orange, D amber, A yellow) and cool on the flat
-  side (Bb purple, Eb violet, Ab blue). Glow and thickness follow volume, and
-  light pulses travel along awake veins.
-- **Each vein's orientation is its note's direction on the circle of fifths**,
-  so notes a fifth apart run nearly parallel and clashing notes cross.
-- **The inner light** takes its hue from the harmonic centre of gravity.
+- **Around: the circle of fifths.** A note's direction from the centre is its
+  place on the circle, so neighbours a fifth apart sit side by side and a
+  tritone sits across the orb. Colour follows the same circle, one hue per
+  step: warm on the sharp side (G orange, D amber, A yellow), cool on the flat
+  side (Bb purple, Eb violet, Ab blue).
+- **Out: the octave.** Octave 1 sits near the core and each octave is one
+  step further out. At the default spread, octaves 1–5 (bass up to about
+  1 kHz, where most voices and instruments live) are inside the glass and
+  octaves 6–8 (overtones and air) float outside it. The **Octave spread**
+  slider pulls them in or pushes them apart.
+- **Up and down: time.** The equator is now. Each vein's last four seconds
+  stream from the equator toward both poles, so a held note draws a long,
+  even vein, a repeated note draws a string of beads, and a melody draws a
+  staircase across neighbouring veins. Loudness is thickness.
+
+On top of that:
+
+- **Attacks** flash white at the equator the moment a note is struck.
+- **Drum hits** etch rings into the glass that travel poleward with the
+  veins, forming a beat grid: kicks draw wide rings, snares medium, hats fine.
+  Kicks also give the orb a small heartbeat.
+- **The seed of light** at the centre takes its hue from the harmonic centre
+  of gravity.
 - **Mood lighting (experimental)** tracks a slow-moving sense of home and
   warms the room when the harmony leans sharpward of it, cools it when it
   leans flatward (the minor iv in a major key is the classic example).
 
 ### How the analysis works
 
-1. Meyda extracts features from 4096-sample frames (~85 ms at 48 kHz).
+1. Meyda extracts features from 4096-sample frames every 2048 samples
+   (~23 frames a second at 48 kHz).
 2. `processPowerSpectrum` maps 48 log-spaced bins per octave to notes and
-   scores each bin with a harmonic/percussive mask (median-filter HPSS), so
-   drums and hiss don't light up notes.
+   scores each bin with a harmonic/percussive mask (median-filter HPSS over
+   about 0.4 s), so drums and hiss don't light up notes.
 3. `LowBandAnalyzer` handles notes below C4 with a 16384-sample FFT and peak
    interpolation, since 4096-sample bins are several semitones wide there.
-4. `OrbAnalyzer` sums everything into vein levels (with automatic gain),
-   energy, and the here/home/lean feeling layer.
+4. `OrbAnalyzer` sums everything into one level per note and octave (with
+   automatic gain per octave), detects note attacks, finds drum hits in the
+   percussive part (low, mid and high bands), and tracks energy and the
+   here/home/lean feeling layer.
 
 ## Preview without the extension
 

@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Meyda from "meyda";
-import { AudioFeatures, BUFFER_SIZE, FEATURE_EXTRACTORS, noteNames } from "../utils/consts";
+import { AudioFeatures, BUFFER_SIZE, FEATURE_EXTRACTORS, HOP_SIZE, noteNames } from "../utils/consts";
 import { fifthsIndex } from "../utils/notes";
 import { fifthsAngleToHue, linearToHex, oklchToLinear } from "../utils/noteColors";
 import { emptyOrbFrame, OrbAnalyzer, OrbFrame } from "../utils/orbAnalysis";
-import { HarmonicMask, processPowerSpectrum } from "../utils/processPowerSpectrum";
+import { harmonicHistoryFrames, HarmonicMask, processPowerSpectrum } from "../utils/processPowerSpectrum";
 import { LowBandAnalyzer, LOW_FFT_SIZE } from "../utils/lowBand";
 import { OrbScene, OrbSettings } from "../components/orb/OrbScene";
 import { analyzeBuffer, frameAt, Timeline } from "./analysis";
@@ -44,7 +44,7 @@ export const PreviewApp = () => {
   const clockRef = useRef({ mode: "loop" as Mode, startedAt: 0, loopStart: performance.now() });
 
   const reducedMotion = useMemo(() => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false, []);
-  const [settings, setSettings] = useState<OrbSettings>({ mood: true, autoRotate: !reducedMotion });
+  const [settings, setSettings] = useState<OrbSettings>({ mood: true, autoRotate: !reducedMotion, spread: 1 });
   const [timeline, setTimeline] = useState<Timeline | null>(null);
   const [progress, setProgress] = useState(0);
   const [mode, setMode] = useState<Mode>("loop");
@@ -149,8 +149,9 @@ export const PreviewApp = () => {
       source.connect(out);
       out.connect(ctx.destination);
       // Same live path as the extension: Meyda on the playing audio.
-      const mask = new HarmonicMask();
-      const orb = new OrbAnalyzer({ hopSeconds: BUFFER_SIZE / ctx.sampleRate, sampleRate: ctx.sampleRate, fftSize: BUFFER_SIZE });
+      const hopSeconds = HOP_SIZE / ctx.sampleRate;
+      const mask = new HarmonicMask(harmonicHistoryFrames(hopSeconds));
+      const orb = new OrbAnalyzer({ hopSeconds, sampleRate: ctx.sampleRate, fftSize: BUFFER_SIZE });
       const tap = ctx.createAnalyser();
       tap.fftSize = LOW_FFT_SIZE;
       out.connect(tap);
@@ -160,6 +161,7 @@ export const PreviewApp = () => {
         audioContext: ctx,
         source: out,
         bufferSize: BUFFER_SIZE,
+        hopSize: HOP_SIZE,
         featureExtractors: [...FEATURE_EXTRACTORS],
         callback: (features: AudioFeatures) => {
           if (!features?.powerSpectrum) return;
@@ -237,10 +239,25 @@ export const PreviewApp = () => {
       <div className="overlay">
         <header className="panel brand">
           <h1>Audioforma</h1>
-          <p>
-            Orb mode. Each vein is a note, coloured by its place on the circle of fifths. Glow is volume. Low notes
-            hug the glass, high notes float further out.
-          </p>
+          <p>Orb mode. Each vein is one note in one octave; the louder the note, the thicker the vein.</p>
+          <dl className="axes">
+            <div>
+              <dt>Around</dt>
+              <dd>Note, by its place on the circle of fifths (and its colour)</dd>
+            </div>
+            <div>
+              <dt>Out</dt>
+              <dd>Octave: bass at the core, treble past the glass</dd>
+            </div>
+            <div>
+              <dt>Up/down</dt>
+              <dd>Time: the equator is now, the last 4 s stream to the poles</dd>
+            </div>
+            <div>
+              <dt>Rings</dt>
+              <dd>Drum hits on the glass: kick wide, snare medium, hats fine</dd>
+            </div>
+          </dl>
         </header>
 
         <div className="panel toggles">
@@ -261,6 +278,20 @@ export const PreviewApp = () => {
               onChange={(e) => setSettings((s) => ({ ...s, autoRotate: e.target.checked }))}
             />
             Auto-rotate
+          </label>
+          <label htmlFor="spread-range" className="range">
+            <span>
+              Octave spread <output htmlFor="spread-range">{settings.spread.toFixed(2)}x</output>
+            </span>
+            <input
+              id="spread-range"
+              type="range"
+              min={0.55}
+              max={1.6}
+              step={0.05}
+              value={settings.spread}
+              onChange={(e) => setSettings((s) => ({ ...s, spread: parseFloat(e.target.value) }))}
+            />
           </label>
         </div>
 

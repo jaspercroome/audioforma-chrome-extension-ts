@@ -55,113 +55,115 @@ float snoise(vec3 v) {
 `;
 
 /**
- * Veins: one instanced tube per note and register, built entirely in the
- * vertex shader so it can meander and swell with the music. Each instance is
- * a great circle around the orb whose tilt direction is the note's position
- * on the circle of fifths, so notes a fifth apart run nearly parallel and
- * clashing notes cross.
+ * Veins: one instanced tube per note and octave, built in the vertex shader.
+ *
+ * Each vein is a meridian on its octave's shell (radius = octave), at the
+ * note's azimuth on the circle of fifths. Along its length it is a timeline:
+ * the equator is now, and the note's level over the last few seconds is read
+ * from a history texture and streams toward both poles. So a held note is a
+ * long, even vein; a repeated note is a string of beads flowing outward; and
+ * each attack flashes white at the equator as it happens.
  */
 export const veinVertex = /* glsl */ `
-attribute float aU;
-attribute float aTheta;
-attribute vec3 iAxisA;
-attribute vec3 iAxisB;
-attribute float iRadius;
+attribute float aU;       // 0..1 along the vein, pole to pole through the equator
+attribute float aTheta;   // around the tube
+attribute float iPhi;     // azimuth: the note's place on the circle of fifths
+attribute float iOctaveT; // 0..1 from the innermost to the outermost octave
 attribute float iTube;
 attribute vec3 iColor;
 attribute float iSeed;
-attribute float iLevel;
+attribute float iRow;     // this vein's row in the history texture
+attribute float iFlash;   // attack flash, 0..1
 
+uniform sampler2D uHistory;
+uniform float uRows;
+uniform float uHead;      // texture u of "now"
+uniform float uSpan;      // texture u covered by the whole history
+uniform float uLatMax;
+uniform float uInner;
+uniform float uReach;
+uniform float uCurve;
+uniform float uSpread;
 uniform float uTime;
-uniform float uWobble;
 uniform float uRadiusScale;
 
 varying vec3 vColor;
 varying float vLevel;
-varying float vU;
-varying float vSeed;
+varying float vFlash;
+varying float vS;
 varying vec3 vNormalV;
 varying vec3 vViewPos;
-varying float vTaper;
 
 ${simplex3d}
 
-// Centre line of the vein at angle a around its ring: a great circle that
-// meanders off its plane. Noise is sampled on a circle so the loop has no seam.
-vec3 veinCenter(float a, float level) {
-  vec3 radial = cos(a) * iAxisA + sin(a) * iAxisB;
-  vec3 planeNormal = normalize(cross(iAxisA, iAxisB));
-  vec3 loopCoord = vec3(cos(a), sin(a), 0.0);
-  float meander = snoise(loopCoord * 1.6 + vec3(iSeed * 3.7, iSeed * 1.3, uTime * 0.09));
-  float ripple = snoise(loopCoord * 4.3 + vec3(-iSeed, iSeed * 2.1, uTime * 0.23));
-  return radial * (iRadius + 0.012 * ripple * (0.4 + level))
-       + planeNormal * (uWobble * (0.16 * meander + 0.035 * ripple * level));
+float levelAt(float s) {
+  return texture2D(uHistory, vec2(uHead - s * uSpan, (iRow + 0.5) / uRows)).r;
+}
+
+vec3 veinPoint(float u) {
+  float signedS = 2.0 * u - 1.0;
+  float s = abs(signedS);
+  float lat = signedS * uLatMax;
+  float r = uInner + uReach * uSpread * pow(iOctaveT, uCurve);
+  // A slow organic meander that grows toward the tips.
+  float wander = snoise(vec3(s * 2.6 + iSeed * 5.0, iSeed * 3.1, uTime * 0.11)) * 0.06 * (0.25 + s);
+  float phi = iPhi + wander;
+  return r * vec3(cos(lat) * cos(phi), sin(lat), cos(lat) * sin(phi));
 }
 
 void main() {
-  float a = aU * 6.28318530718;
-  float level = clamp(iLevel, 0.0, 1.5);
-  vec3 center = veinCenter(a, level);
-
-  // Frame from the displaced curve itself, so the tube stays round where it
-  // meanders instead of flattening into a twisted ribbon.
-  vec3 tangent = normalize(veinCenter(a + 0.004, level) - veinCenter(a - 0.004, level));
+  vec3 center = veinPoint(aU);
+  vec3 tangent = normalize(veinPoint(aU + 0.003) - veinPoint(aU - 0.003));
   vec3 outward = normalize(center);
   vec3 N = normalize(outward - dot(outward, tangent) * tangent);
   vec3 B = cross(tangent, N);
 
-  // Veins taper and bulge along their length and swell when their note sounds.
-  vec3 loopCoord = vec3(cos(a), sin(a), 0.0);
-  float taper = 0.55 + 0.45 * (0.5 + 0.5 * snoise(loopCoord * 2.2 + vec3(iSeed * 5.1, 7.0, 0.0)));
-  float r = iTube * taper * (1.0 + 1.3 * level) * uRadiusScale;
+  float s = abs(2.0 * aU - 1.0);
+  float level = levelAt(s);
+  float flash = iFlash * exp(-s * 16.0);
+  float thickness = iTube * (0.3 + 2.2 * level + 1.6 * flash) * (1.0 - 0.5 * s) * uRadiusScale;
   vec3 offset = cos(aTheta) * N + sin(aTheta) * B;
-  vec3 pos = center + r * offset;
+  vec3 pos = center + thickness * offset;
 
   vec4 mv = modelViewMatrix * vec4(pos, 1.0);
   vNormalV = normalize(normalMatrix * offset);
   vViewPos = mv.xyz;
   vColor = iColor;
   vLevel = level;
-  vU = aU;
-  vSeed = iSeed;
-  vTaper = taper;
+  vFlash = flash;
+  vS = s;
   gl_Position = projectionMatrix * mv;
 }
 `;
 
 export const veinFragment = /* glsl */ `
-uniform float uTime;
-uniform float uFlow;
-
 varying vec3 vColor;
 varying float vLevel;
-varying float vU;
-varying float vSeed;
+varying float vFlash;
+varying float vS;
 varying vec3 vNormalV;
 varying vec3 vViewPos;
-varying float vTaper;
 
 void main() {
-  vec3 viewDir = normalize(-vViewPos);
-  float facing = abs(dot(normalize(vNormalV), viewDir));
+  float facing = abs(dot(normalize(vNormalV), normalize(-vViewPos)));
   float core = pow(facing, 1.6);
-  float lvl = clamp(vLevel, 0.0, 1.5);
-  float awake = smoothstep(0.03, 0.35, lvl); // ('active' is reserved in GLSL ES 3.0)
+  float lvl = clamp(vLevel, 0.0, 1.0);
+  // Any sound at all turns the vein fully to its colour; loudness shows as
+  // thickness instead. Half-lit veins would blend into pastel on a white room.
+  float awake = smoothstep(0.006, 0.06, lvl + vFlash); // ('active' is reserved in GLSL ES 3.0)
 
-  // Light travelling along the vein, like sap or a signal: 3 pulses per loop.
-  float phase = fract(vU * 3.0 - uTime * uFlow + vSeed);
-  float pulse = smoothstep(0.0, 0.06, phase) * (1.0 - smoothstep(0.06, 0.42, phase));
-
-  // Dormant: a pale glass filament. Awake: neon with a white-hot core.
-  vec3 dormant = vec3(0.74, 0.76, 0.80) * (0.72 + 0.28 * core);
-  float glow = lvl * (1.0 + 1.4 * pulse);
-  // Keep the tube saturated (only the dominant channel goes past 1 and blooms),
-  // with a thin white-hot filament down the middle when the note is loud.
-  vec3 neon = vColor * (0.85 + 1.35 * glow) * (0.55 + 0.45 * core);
-  neon = mix(neon, vec3(1.0) * (1.2 + 1.5 * glow), pow(core, 10.0) * clamp(lvl - 0.45, 0.0, 1.0) * 0.7);
+  // Dormant: a faint glass filament, so the orb's structure shows but stays quiet.
+  vec3 dormant = vec3(0.7, 0.73, 0.78) * (0.7 + 0.3 * core);
+  // Awake: saturated neon (only the dominant channel passes 1 and blooms),
+  // turning white-hot where a note has just been struck.
+  // Kept near 1 in the dominant channel: brighter values get desaturated by the
+  // tone mapper and read pastel on the white room.
+  vec3 neon = vColor * (1.0 + 0.5 * lvl) * (0.55 + 0.45 * core);
+  neon = mix(neon, vec3(1.0) * (1.3 + 1.6 * vFlash), clamp(vFlash * 1.1, 0.0, 1.0) * (0.3 + 0.7 * core));
   vec3 color = mix(dormant, neon, awake);
 
-  float alpha = mix(0.22 + 0.3 * core, 1.0, awake) * smoothstep(0.0, 0.25, vTaper);
+  float tips = 1.0 - smoothstep(0.72, 1.0, vS);
+  float alpha = mix(0.08 + 0.08 * core, 1.0, awake) * tips;
   gl_FragColor = vec4(color, alpha);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -174,25 +176,77 @@ void main() {
  * more than as a bright halo, so this blends normally rather than additively.
  */
 export const veinHaloFragment = /* glsl */ `
-uniform float uTime;
-uniform float uFlow;
-
 varying vec3 vColor;
 varying float vLevel;
-varying float vU;
-varying float vSeed;
+varying float vFlash;
+varying float vS;
 varying vec3 vNormalV;
 varying vec3 vViewPos;
-varying float vTaper;
 
 void main() {
   float facing = abs(dot(normalize(vNormalV), normalize(-vViewPos)));
-  float lvl = clamp(vLevel, 0.0, 1.5);
-  float phase = fract(vU * 3.0 - uTime * uFlow + vSeed);
-  float pulse = smoothstep(0.0, 0.06, phase) * (1.0 - smoothstep(0.06, 0.42, phase));
-  float glow = lvl * (1.0 + pulse);
-  float alpha = pow(facing, 3.0) * smoothstep(0.08, 0.7, lvl) * (0.18 + 0.14 * glow) * smoothstep(0.0, 0.3, vTaper);
-  gl_FragColor = vec4(vColor * (1.0 + 0.5 * glow), alpha);
+  float lvl = clamp(vLevel + vFlash, 0.0, 1.2);
+  float tips = 1.0 - smoothstep(0.65, 1.0, vS);
+  float alpha = pow(facing, 3.0) * smoothstep(0.1, 0.7, lvl) * (0.08 + 0.1 * lvl) * tips;
+  gl_FragColor = vec4(vColor * (1.0 + 0.6 * lvl), alpha);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}
+`;
+
+/**
+ * Beat lines on the glass. Each drum hit starts a ring at the equator that
+ * travels toward both poles at the same speed as the veins' history, so the
+ * rings form a moving beat grid you can line notes up against. Kicks draw
+ * wide rings, snares medium, hats fine ones.
+ */
+export const MAX_BEAT_LINES = 16;
+export const beatVertex = /* glsl */ `
+varying vec3 vPos;
+varying vec3 vNormalV;
+varying vec3 vViewPos;
+void main() {
+  vPos = position;
+  vec4 mv = modelViewMatrix * vec4(position, 1.0);
+  vViewPos = mv.xyz;
+  vNormalV = normalize(normalMatrix * normal);
+  gl_Position = projectionMatrix * mv;
+}
+`;
+
+export const beatFragment = /* glsl */ `
+uniform vec4 uLines[${MAX_BEAT_LINES}]; // start time, strength, width (radians), active
+uniform float uTime;
+uniform float uLatMax;
+uniform float uHistorySeconds;
+varying vec3 vPos;
+varying vec3 vNormalV;
+varying vec3 vViewPos;
+
+void main() {
+  float lat = abs(asin(clamp(normalize(vPos).y, -1.0, 1.0)));
+  float glint = 0.0;
+  float groove = 0.0;
+  for (int i = 0; i < ${MAX_BEAT_LINES}; i++) {
+    vec4 line = uLines[i];
+    if (line.w < 0.5) continue;
+    float age = uTime - line.x;
+    if (age < 0.0 || age > uHistorySeconds) continue;
+    float front = age / uHistorySeconds * uLatMax;
+    float d = (lat - front) / line.z;
+    float fade = line.y * exp(-age / 1.5) * (1.0 - smoothstep(0.7, 1.0, age / uHistorySeconds));
+    glint += fade * exp(-d * d * 2.0);
+    groove += fade * exp(-(d + 1.1) * (d + 1.1) * 2.0);
+  }
+  float facing = abs(dot(normalize(vNormalV), normalize(-vViewPos)));
+  // Strongest toward the silhouette, faint where the glass faces the camera,
+  // so the rings frame the veins instead of fogging them.
+  float rim = 0.3 + 0.7 * pow(1.0 - facing, 0.8);
+  // Graphite rings with a soft trailing shadow: dark enough to read against a
+  // white room, like latitude lines etched into the glass.
+  vec3 color = mix(vec3(0.3, 0.33, 0.4), vec3(0.12, 0.13, 0.17), glint / (glint + groove + 1e-4));
+  float alpha = clamp(1.25 * glint + 0.3 * groove, 0.0, 0.8) * rim;
+  gl_FragColor = vec4(color, alpha);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }

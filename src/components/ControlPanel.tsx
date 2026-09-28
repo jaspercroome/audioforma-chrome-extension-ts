@@ -174,9 +174,26 @@ export const ControlPanel = ({
                   style={{ width: '16px', height: '16px' }}
                 />
               </label>
+              <label style={{ display: 'block' }}>
+                <span style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', color: '#4b5563' }}>
+                  Octave spread <span style={{ fontVariantNumeric: 'tabular-nums' }}>{settings.orbSpread.toFixed(2)}x</span>
+                </span>
+                <input
+                  type="range"
+                  min="0.55"
+                  max="1.6"
+                  step="0.05"
+                  value={settings.orbSpread}
+                  onChange={(e) => onChange({ ...settings, orbSpread: parseFloat(e.target.value) })}
+                  style={{ width: '100%' }}
+                />
+              </label>
               <div style={{ fontSize: '12px', color: '#6b7280', lineHeight: 1.45 }}>
-                Each vein is a note, coloured by its place on the circle of fifths. Glow is volume;
-                low notes hug the glass, high notes float further out. The inner light follows the
+                Each vein is one note in one octave. Around the orb: the note's place on the circle of
+                fifths (its colour too). Distance from the centre: the octave, bass near the core and
+                treble out past the glass. Up and down: time. The equator is now, and each note's last
+                four seconds stream toward the poles, so rhythm reads as beads and held notes as solid
+                veins. Rings on the glass are drum hits. The seed of light at the centre follows the
                 harmonic centre, and mood lighting warms or cools the room as the harmony leans
                 sharpward or flatward of home.
               </div>

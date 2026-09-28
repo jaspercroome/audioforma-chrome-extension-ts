@@ -9,6 +9,8 @@ export type VisualSettings = {
   orbMood: boolean;
   /** Orb: slowly orbit the camera. */
   orbAutoRotate: boolean;
+  /** Orb: distance between octave shells (1 = default; lower keeps them inside the glass). */
+  orbSpread: number;
 };
 
 export type AudioFeatures = {
@@ -38,6 +40,11 @@ export type AmpPoint = {
 };
 export type AmpArray = Array<AmpPoint>;
 export const BUFFER_SIZE = 4096;
+/**
+ * Samples between analysis frames. Half the buffer, so frames overlap and the
+ * visuals update every ~43 ms at 48 kHz instead of every ~85 ms.
+ */
+export const HOP_SIZE = 2048;
 
 /** Meyda features every view needs; shared by the live analyzer and offline analysis. */
 export const FEATURE_EXTRACTORS = [
@@ -124,6 +131,7 @@ export const defaultVisualSettings: VisualSettings = {
   stickRadius: 0.01,
   orbMood: true,
   orbAutoRotate: true,
+  orbSpread: 1,
 };
 
 export const spotifyAccessTokenKey = 'af-spotifyAccessToken';

@@ -15,7 +15,10 @@ import * as THREE from "three";
 import { noteNames } from "../../utils/consts";
 import { fifthsIndex } from "../../utils/notes";
 import { fifthsAngleToHue, NOTE_COLORS_LINEAR, oklchToLinear } from "../../utils/noteColors";
-import { BANDS, OrbFrame, PITCH_CLASSES, VEIN_COUNT } from "../../utils/orbAnalysis";
+import { OCTAVES, OrbFrame, PITCH_CLASSES, VEIN_COUNT } from "../../utils/orbAnalysis";
+import { BeatLines } from "./BeatLines";
+import { EquatorGuide } from "./EquatorGuide";
+import { GLASS_RADIUS, outerRadius } from "./layout";
 import { coreFragment, coreVertex } from "./shaders";
 import { Veins } from "./Veins";
 
@@ -23,9 +26,11 @@ export type OrbSettings = {
   /** Tint the room by the harmonic lean (experimental "feeling" layer). */
   mood: boolean;
   autoRotate: boolean;
+  /** Distance between octave shells: 1 is the default, lower pulls everything inside the glass. */
+  spread: number;
 };
 
-const FLOOR_Y = -1.62;
+const FLOOR_Y = -1.75;
 const ROOM = {
   neutral: new THREE.Color("#f1f0ec"),
   warm: new THREE.Color("#f7eee1"),
@@ -45,11 +50,6 @@ const NOTE_COLORS = NOTE_COLORS_LINEAR.map((rgb) => new THREE.Color().setRGB(...
 const approach = (current: number, target: number, dt: number, tau: number) =>
   current + (target - current) * (1 - Math.exp(-dt / tau));
 
-type Shared = {
-  smoothedLevels: React.MutableRefObject<Float32Array>;
-  energy: React.MutableRefObject<number>;
-};
-
 /** Colour of the orb's inner light: hue from where the harmony sits, saturation from how focused it is. */
 const feelingColor = (hereX: number, hereY: number, focus: number, out: THREE.Color) => {
   const angleDeg = THREE.MathUtils.radToDeg(Math.atan2(hereY, hereX));
@@ -58,6 +58,7 @@ const feelingColor = (hereX: number, hereY: number, focus: number, out: THREE.Co
   return out.setRGB(1 + (r - 1) * saturation, 1 + (g - 1) * saturation, 1 + (b - 1) * saturation, THREE.LinearSRGBColorSpace);
 };
 
+/** A small seed of light at the centre, coloured by the harmonic centre of gravity. */
 const Core = ({ frameRef, energy }: { frameRef: React.MutableRefObject<OrbFrame>; energy: React.MutableRefObject<number> }) => {
   const material = useMemo(
     () =>
@@ -84,8 +85,7 @@ const Core = ({ frameRef, energy }: { frameRef: React.MutableRefObject<OrbFrame>
     const frame = frameRef.current;
     here.current.x = approach(here.current.x, frame.here.x, dt, 0.6);
     here.current.y = approach(here.current.y, frame.here.y, dt, 0.6);
-    const focus = Math.hypot(here.current.x, here.current.y);
-    feelingColor(here.current.x, here.current.y, focus, target);
+    feelingColor(here.current.x, here.current.y, Math.hypot(here.current.x, here.current.y), target);
     (material.uniforms.uColor.value as THREE.Color).lerp(target, 1 - Math.exp(-dt / 0.4));
     material.uniforms.uEnergy.value = energy.current;
     material.uniforms.uTime.value = state.clock.elapsedTime;
@@ -93,13 +93,13 @@ const Core = ({ frameRef, energy }: { frameRef: React.MutableRefObject<OrbFrame>
 
   return (
     <mesh material={material} renderOrder={1}>
-      <sphereGeometry args={[0.5, 64, 64]} />
+      <sphereGeometry args={[0.13, 48, 48]} />
     </mesh>
   );
 };
 
 /** Coloured light from the loudest notes, cast from their side of the orb onto the floor. */
-const SpillLights = ({ smoothedLevels }: Pick<Shared, "smoothedLevels">) => {
+const SpillLights = ({ smoothedLevels }: { smoothedLevels: React.MutableRefObject<Float32Array> }) => {
   const lights = useRef<Array<THREE.PointLight | null>>([]);
   const totals = useMemo(() => new Float32Array(PITCH_CLASSES), []);
   const order = useMemo(() => Array.from({ length: PITCH_CLASSES }, (_, i) => i), []);
@@ -111,10 +111,10 @@ const SpillLights = ({ smoothedLevels }: Pick<Shared, "smoothedLevels">) => {
   useFrame((_, delta) => {
     const dt = Math.min(Math.max(delta, 0), 0.1);
     const levels = smoothedLevels.current;
-    for (let pc = 0; pc < PITCH_CLASSES; pc++) {
-      let sum = 0;
-      for (let b = 0; b < BANDS; b++) sum += levels[b * PITCH_CLASSES + pc] * (b === 0 ? 1.2 : 1);
-      totals[pc] = sum;
+    totals.fill(0);
+    for (let o = 0; o < OCTAVES; o++) {
+      const weight = o < 3 ? 1.2 : 1;
+      for (let pc = 0; pc < PITCH_CLASSES; pc++) totals[pc] += levels[o * PITCH_CLASSES + pc] * weight;
     }
     order.sort((a, b) => totals[b] - totals[a]);
     for (let i = 0; i < SPILL_LIGHTS; i++) {
@@ -125,10 +125,10 @@ const SpillLights = ({ smoothedLevels }: Pick<Shared, "smoothedLevels">) => {
       const diff = Math.atan2(Math.sin(targetAngle - s.angle), Math.cos(targetAngle - s.angle));
       s.angle += diff * (1 - Math.exp(-dt / 0.35));
       s.color.lerp(NOTE_COLORS[pc], 1 - Math.exp(-dt / 0.25));
-      s.intensity = approach(s.intensity, Math.min(1.2, totals[pc] / 1.6), dt, 0.2);
+      s.intensity = approach(s.intensity, Math.min(1.2, totals[pc] / 2.5), dt, 0.15);
       const light = lights.current[i];
       if (light) {
-        light.position.set(Math.cos(s.angle) * 1.55, -0.95, Math.sin(s.angle) * 1.55);
+        light.position.set(Math.cos(s.angle) * 1.6, -1.05, Math.sin(s.angle) * 1.6);
         light.color.copy(s.color);
         light.intensity = s.intensity * 7;
       }
@@ -163,7 +163,7 @@ const MoodRig = ({
 
   useEffect(() => {
     scene.background = room;
-    scene.fog = new THREE.Fog(room, 10, 26);
+    scene.fog = new THREE.Fog(room, 11, 30);
     return () => {
       scene.background = null;
       scene.fog = null;
@@ -189,43 +189,66 @@ const MoodRig = ({
   return null;
 };
 
+/** Camera distance that keeps every octave shell in frame for this window shape. */
+const fitDistance = (camera: THREE.PerspectiveCamera, width: number, height: number, spread: number) => {
+  const aspect = width / Math.max(1, height);
+  const halfHeight = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  // Outermost shell (its veins taper toward the poles, so a little inside it)
+  // plus the vein haze.
+  const extent = outerRadius(spread) * 0.92 + 0.2;
+  const forHeight = (extent * 1.05) / halfHeight;
+  const forWidth = extent / (halfHeight * aspect);
+  return Math.max(forHeight, forWidth);
+};
+
 /**
- * Keep the whole orb in frame on any window shape. The field of view is
- * vertical, so on a tall, narrow window (a phone, a slim popup) the camera
- * backs off until the orb and its veins fit the width. Runs on resize only,
- * so it never fights the viewer's own zooming.
+ * Keep the whole orb in frame on any window shape and octave spread. Runs on
+ * resize and spread changes only, so it never fights the viewer's own zooming.
  */
-const FitCamera = () => {
+const FitCamera = ({ spread }: { spread: number }) => {
   const { camera, size, controls } = useThree();
   useEffect(() => {
     if (!(camera instanceof THREE.PerspectiveCamera)) return;
-    const aspect = size.width / Math.max(1, size.height);
-    const halfHeight = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
-    const neededForWidth = 3.4 / (2 * halfHeight * aspect);
-    const distance = Math.max(6.4, neededForWidth);
-    const target = new THREE.Vector3(0, -0.05, 0);
+    const distance = fitDistance(camera, size.width, size.height, spread);
+    const target = new THREE.Vector3(0, 0, 0);
     const offset = camera.position.clone().sub(target);
     camera.position.copy(target.add(offset.setLength(distance)));
     (controls as unknown as { update?: () => void } | null)?.update?.();
-  }, [camera, size.width, size.height, controls]);
+  }, [camera, size.width, size.height, controls, spread]);
   return null;
 };
 
 /** Deterministic slow orbit for rendered clips; OrbitControls handles live use. */
-const RenderCamera = () => {
+const RenderCamera = ({ spread }: { spread: number }) => {
+  const { size } = useThree();
   useFrame(({ camera, clock }) => {
     const t = clock.elapsedTime;
+    const distance = fitDistance(camera as THREE.PerspectiveCamera, size.width, size.height, spread);
     const angle = -0.35 + t * 0.045;
-    camera.position.set(Math.sin(angle) * 6.4, 0.3 + 0.12 * Math.sin(t * 0.13), Math.cos(angle) * 6.4);
-    camera.lookAt(0, -0.05, 0);
+    const elevation = 0.2 + 0.03 * Math.sin(t * 0.13); // a little above the equator
+    camera.position.set(
+      Math.sin(angle) * Math.cos(elevation) * distance,
+      Math.sin(elevation) * distance,
+      Math.cos(angle) * Math.cos(elevation) * distance
+    );
+    camera.lookAt(0, 0, 0);
   });
   return null;
 };
 
-const Breath = ({ energy, children }: { energy: React.MutableRefObject<number>; children: React.ReactNode }) => {
+/** Slow breathing with the energy, plus a heartbeat on every kick. */
+const Breath = ({
+  energy,
+  kick,
+  children,
+}: {
+  energy: React.MutableRefObject<number>;
+  kick: React.MutableRefObject<number>;
+  children: React.ReactNode;
+}) => {
   const group = useRef<THREE.Group>(null);
   useFrame(({ clock }) => {
-    const s = 1 + 0.035 * energy.current + 0.008 * Math.sin(clock.elapsedTime * 0.9);
+    const s = 1 + 0.02 * energy.current + 0.022 * kick.current + 0.006 * Math.sin(clock.elapsedTime * 0.9);
     group.current?.scale.setScalar(s);
   });
   return <group ref={group}>{children}</group>;
@@ -242,7 +265,9 @@ const OrbWorld = ({
 }) => {
   const smoothedLevels = useRef(new Float32Array(VEIN_COUNT));
   const energy = useRef(0);
+  const kick = useRef(0);
   const keyLight = useRef<THREE.DirectionalLight>(null);
+  const spread = settings.spread;
 
   return (
     <>
@@ -269,45 +294,48 @@ const OrbWorld = ({
       </mesh>
       <ContactShadows
         position={[0, FLOOR_Y + 0.003, 0]}
-        opacity={0.6}
-        scale={7}
-        blur={2.2}
-        far={3}
+        opacity={0.55}
+        scale={8}
+        blur={2.4}
+        far={3.5}
         resolution={512}
         color="#6f6d78"
       />
 
-      <Float speed={1.1} rotationIntensity={0.2} floatIntensity={0.55} floatingRange={[-0.07, 0.07]}>
-        <Breath energy={energy}>
+      <Float speed={1} rotationIntensity={0.12} floatIntensity={0.45} floatingRange={[-0.06, 0.06]}>
+        <Breath energy={energy} kick={kick}>
           <Core frameRef={frameRef} energy={energy} />
-          <Veins frameRef={frameRef} smoothedRef={smoothedLevels} energyRef={energy} />
-          <mesh renderOrder={3}>
+          <EquatorGuide spread={spread} />
+          <Veins frameRef={frameRef} smoothedRef={smoothedLevels} spread={spread} />
+          <mesh renderOrder={3} scale={GLASS_RADIUS}>
             <sphereGeometry args={[1, 128, 128]} />
+            {/* A thin, clear shell: enough glass to catch the studio light,
+                not so much that it warps the octave shells inside. */}
             <MeshTransmissionMaterial
-              samples={renderMode ? 10 : 6}
-              resolution={768}
+              samples={renderMode ? 8 : 6}
               transmission={1}
-              roughness={0.05}
-              thickness={0.5}
-              ior={1.25}
-              chromaticAberration={0.05}
-              anisotropicBlur={0.1}
-              distortion={0.2}
-              distortionScale={0.35}
-              temporalDistortion={0.1}
-              clearcoat={0.35}
+              roughness={0}
+              thickness={0.12}
+              ior={1.12}
+              chromaticAberration={0.015}
+              anisotropicBlur={0}
+              distortion={0.04}
+              distortionScale={0.3}
+              temporalDistortion={0.04}
+              clearcoat={0.08}
               clearcoatRoughness={0.1}
-              envMapIntensity={0.8}
-              attenuationDistance={3}
+              envMapIntensity={0.45}
+              attenuationDistance={4}
               attenuationColor="#f3f6ff"
               color="#ffffff"
             />
           </mesh>
+          <BeatLines frameRef={frameRef} kickRef={kick} />
         </Breath>
       </Float>
 
       {renderMode ? (
-        <RenderCamera />
+        <RenderCamera spread={spread} />
       ) : (
         <>
           <OrbitControls
@@ -316,17 +344,18 @@ const OrbWorld = ({
             enableDamping
             autoRotate={settings.autoRotate}
             autoRotateSpeed={0.35}
-            minDistance={3.4}
-            maxDistance={18}
-            maxPolarAngle={Math.PI * 0.52}
-            target={[0, -0.05, 0]}
+            minDistance={2.5}
+            maxDistance={24}
+            maxPolarAngle={Math.PI * 0.62}
+            target={[0, 0, 0]}
           />
-          <FitCamera />
+          <FitCamera spread={spread} />
         </>
       )}
 
       <EffectComposer multisampling={4}>
-        <Bloom mipmapBlur intensity={1.25} luminanceThreshold={1} luminanceSmoothing={0.3} radius={0.8} />
+        {/* Kept modest: bloom adds light, and on a white room that reads as haze. */}
+        <Bloom mipmapBlur intensity={0.8} luminanceThreshold={1} luminanceSmoothing={0.3} radius={0.7} />
         <ToneMapping mode={ToneMappingMode.NEUTRAL} />
         <Vignette offset={0.32} darkness={0.28} />
       </EffectComposer>
@@ -347,7 +376,7 @@ export const OrbScene = ({ frameRef, settings, renderMode = false, onCreated }: 
     frameloop={renderMode ? "never" : "always"}
     dpr={renderMode ? 1 : [1, 1.75]}
     gl={{ antialias: false, preserveDrawingBuffer: renderMode, powerPreference: "high-performance" }}
-    camera={{ position: [0, 0.3, 6.4], fov: 30, near: 0.1, far: 80 }}
+    camera={{ position: [0, 1.4, 7.5], fov: 30, near: 0.1, far: 80 }}
     onCreated={onCreated}
   >
     <OrbWorld frameRef={frameRef} settings={settings} renderMode={renderMode} />

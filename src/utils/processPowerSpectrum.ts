@@ -29,15 +29,23 @@ const analyzeSpectralCharacteristics = (features: AudioFeatures) => {
   return { tonality, brightness };
 };
 
-const median = (values: Float32Array | number[], scratch: number[]) => {
-  scratch.length = 0;
-  for (let i = 0; i < values.length; i++) scratch.push(values[i]);
-  scratch.sort((a, b) => a - b);
-  const mid = scratch.length >> 1;
-  return scratch.length % 2 ? scratch[mid] : (scratch[mid - 1] + scratch[mid]) / 2;
+/** Median of scratch[0..count), by insertion sort (fast for the short windows used here). */
+const medianOf = (scratch: Float64Array, count: number) => {
+  for (let i = 1; i < count; i++) {
+    const v = scratch[i];
+    let j = i - 1;
+    while (j >= 0 && scratch[j] > v) {
+      scratch[j + 1] = scratch[j];
+      j--;
+    }
+    scratch[j + 1] = v;
+  }
+  const mid = count >> 1;
+  return count % 2 ? scratch[mid] : (scratch[mid - 1] + scratch[mid]) / 2;
 };
 
-const HISTORY_FRAMES = 5; // ~0.4 s at a 4096 hop
+/** Frames of history for the harmonic (time-median) estimate: ~0.4 s. */
+export const harmonicHistoryFrames = (hopSeconds: number) => Math.max(3, Math.round(0.4 / hopSeconds) | 1);
 const FREQ_HALF_WIDTH = 12; // bins either side for the percussive estimate
 // Separation margin (as in librosa's hpss): a bin only counts as harmonic when
 // its sustained level clearly beats the local broadband level. Plain noise
@@ -52,28 +60,34 @@ const MARGIN = 2;
  */
 export class HarmonicMask {
   private history: Float32Array[] = [];
-  private scratch: number[] = [];
+  private scratch = new Float64Array(64);
+
+  /** @param historyFrames Frames in the time median; keep it near 0.4 s of audio. */
+  constructor(private historyFrames = 5) {}
 
   compute(spectrum: number[]): Float32Array {
     const n = spectrum.length;
     const frame = Float32Array.from(spectrum);
     this.history.push(frame);
-    if (this.history.length > HISTORY_FRAMES) this.history.shift();
+    if (this.history.length > this.historyFrames) this.history.shift();
+    if (this.scratch.length < Math.max(this.history.length, 2 * FREQ_HALF_WIDTH + 1)) {
+      this.scratch = new Float64Array(Math.max(this.history.length, 2 * FREQ_HALF_WIDTH + 1) * 2);
+    }
 
     const mask = new Float32Array(n);
-    const column = new Float32Array(this.history.length);
-    const windowVals: number[] = [];
+    const scratch = this.scratch;
     for (let k = 0; k < n; k++) {
+      let count = 0;
       for (let t = 0; t < this.history.length; t++) {
-        column[t] = this.history[t].length === n ? this.history[t][k] : 0;
+        scratch[count++] = this.history[t].length === n ? this.history[t][k] : 0;
       }
-      const harmonic = median(column, this.scratch);
+      const harmonic = medianOf(scratch, count);
 
-      windowVals.length = 0;
+      count = 0;
       const lo = Math.max(0, k - FREQ_HALF_WIDTH);
       const hi = Math.min(n - 1, k + FREQ_HALF_WIDTH);
-      for (let j = lo; j <= hi; j++) windowVals.push(frame[j]);
-      const percussive = median(windowVals, this.scratch);
+      for (let j = lo; j <= hi; j++) scratch[count++] = frame[j];
+      const percussive = medianOf(scratch, count);
 
       const h2 = harmonic * harmonic;
       const p2 = MARGIN * MARGIN * percussive * percussive;
