@@ -113,9 +113,10 @@ On top of that:
 3. `LowBandAnalyzer` handles notes below C4 with a 16384-sample FFT and peak
    interpolation, since 4096-sample bins are several semitones wide there.
 4. `OrbAnalyzer` sums everything into one level per note and octave (with
-   automatic gain per octave), detects note attacks, finds drum hits in the
-   percussive part (low, mid and high bands), and tracks energy and the
-   here/home/lean feeling layer.
+   automatic gain per octave and an absolute floor, so silence and faint
+   noise stay dark), detects note attacks against each note's recent peak,
+   finds drum hits in the percussive part (low, mid and high bands), and
+   tracks energy and the here/home/lean feeling layer.
 
 ## Preview without the extension
 

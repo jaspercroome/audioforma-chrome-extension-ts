@@ -19,11 +19,13 @@ import { veinFragment, veinHaloFragment, veinVertex } from "./shaders";
 
 const U_SEGMENTS = 128;
 const THETA_SEGMENTS = 8;
-// Crisp envelopes: the history along each vein already shows how notes decay,
-// so the "now" level should follow the sound closely.
-const ATTACK_SECONDS = 0.02;
-const RELEASE_SECONDS = 0.16;
-const FLASH_SECONDS = 0.22;
+// Envelopes: quick enough that rhythm reads, slow enough to glide over the
+// ~23 Hz steps between analysis frames instead of jumping at each one.
+const ATTACK_SECONDS = 0.05;
+const RELEASE_SECONDS = 0.2;
+const FLASH_SECONDS = 0.18;
+/** Analysis runs ~23 times a second; this long without a frame means no audio. */
+const STALE_SECONDS = 0.5;
 
 const seedFor = (i: number) => {
   const s = Math.sin(i * 12.9898 + 78.233) * 43758.5453;
@@ -115,7 +117,13 @@ type VeinsProps = {
 export const Veins = ({ frameRef, smoothedRef, spread }: VeinsProps) => {
   const { geometry, flash } = useMemo(buildGeometry, []);
   const history = useMemo(buildHistory, []);
-  const state = useRef({ head: 0, carry: 0, lastFrameTime: -1, flashes: new Float32Array(VEIN_COUNT) });
+  const state = useRef({
+    head: 0,
+    carry: 0,
+    lastFrameTime: -1,
+    lastNewFrameAt: 0,
+    flashes: new Float32Array(VEIN_COUNT),
+  });
 
   const makeMaterial = (fragmentShader: string, radiusScale: number, depthWrite: boolean) =>
     new THREE.ShaderMaterial({
@@ -124,7 +132,9 @@ export const Veins = ({ frameRef, smoothedRef, spread }: VeinsProps) => {
       uniforms: {
         uHistory: { value: history.texture },
         uRows: { value: VEIN_COUNT },
+        uColumns: { value: HISTORY_COLUMNS },
         uHead: { value: 0 },
+        uCarry: { value: 0 },
         uSpan: { value: (HISTORY_COLUMNS - 2) / HISTORY_COLUMNS },
         uLatMax: { value: LATITUDE_MAX },
         uInner: { value: INNER_RADIUS },
@@ -164,11 +174,16 @@ export const Veins = ({ frameRef, smoothedRef, spread }: VeinsProps) => {
     const s = state.current;
     const smoothed = smoothedRef.current;
     const flashes = s.flashes;
+    const now = clock.clock.elapsedTime;
     const isNewFrame = frame.time !== s.lastFrameTime;
     s.lastFrameTime = frame.time;
+    if (isNewFrame) s.lastNewFrameAt = now;
+    // If analysis frames stop arriving (capture ended, audio stopped), fade to
+    // silence rather than holding the last frame lit.
+    const live = now - s.lastNewFrameAt < STALE_SECONDS;
 
     for (let i = 0; i < VEIN_COUNT; i++) {
-      const goal = frame.levels[i] ?? 0;
+      const goal = live ? frame.levels[i] ?? 0 : 0;
       const tau = goal > smoothed[i] ? ATTACK_SECONDS : RELEASE_SECONDS;
       smoothed[i] += (goal - smoothed[i]) * (1 - Math.exp(-dt / tau));
       flashes[i] *= Math.exp(-dt / FLASH_SECONDS);
@@ -195,10 +210,11 @@ export const Veins = ({ frameRef, smoothedRef, spread }: VeinsProps) => {
     writeColumn(s.head);
     history.texture.needsUpdate = true;
 
-    // Sample at the centre of the head column ("now").
-    const head = (s.head + 0.5) / HISTORY_COLUMNS;
+    // The head column is "now"; the carry (how far into the next column time
+    // has run) lets the past slide smoothly instead of stepping 48 times a second.
     for (const m of [material, haloMaterial]) {
-      m.uniforms.uHead.value = head;
+      m.uniforms.uHead.value = s.head;
+      m.uniforms.uCarry.value = s.carry;
       m.uniforms.uTime.value = clock.clock.elapsedTime;
     }
   });

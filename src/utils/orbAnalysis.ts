@@ -37,11 +37,38 @@ const harmonyWeight = (octave: number) => (octave <= 3 ? 1.5 : octave <= 5 ? 1 :
  */
 const LOW_PEAK_WEIGHT = 2.5;
 
+/**
+ * Absolute floor for the automatic gain, in summed spectrum magnitude (a pure
+ * tone at about -55 dBFS sums to roughly this). Without it the gain keeps
+ * rising through silence until faint noise lights the orb at full brightness.
+ */
+const LEVEL_FLOOR = 3;
+
+/**
+ * Attacks: a note must jump well above its own recent peak (a peak-hold that
+ * decays over half a second), be clearly audible, and not have flashed just
+ * before. Comparing against the previous frame alone let ordinary
+ * frame-to-frame jitter fire dozens of flashes a second.
+ */
+const ATTACK_PEAK_SECONDS = 0.5;
+const ATTACK_RISE = 0.3;
+const ATTACK_MIN_LEVEL = 0.3;
+const ATTACK_REFRACTORY_SECONDS = 0.2;
+
 /** Drum bands by octave: low (to ~130 Hz), mid (~130 Hz-4 kHz), high (above ~4 kHz). */
 export type DrumBand = "low" | "mid" | "high";
 export const DRUM_BANDS: DrumBand[] = ["low", "mid", "high"];
 const drumBandForOctave = (octave: number): DrumBand | null =>
   octave <= 2 ? "low" : octave <= 7 ? "mid" : "high";
+
+/**
+ * A snare or clap is noise across the whole mid range; a plucked note's
+ * transient only lights the octaves its harmonics fall in. So a mid hit needs
+ * percussive energy rising in most of octaves 3-7 at once.
+ */
+const MID_OCTAVES = [3, 4, 5, 6, 7];
+const MID_BROADBAND_OCTAVES = 4;
+const MID_OCTAVE_RISE = 1.8;
 
 export type Vec2 = { x: number; y: number };
 
@@ -111,14 +138,15 @@ class DrumOnsets {
 
   constructor(private hopSeconds: number) {}
 
-  update(energy: number) {
+  /** @param allowed Extra evidence the band requires (the mid band's broadband check). */
+  update(energy: number, allowed = true) {
     const { hopSeconds } = this;
     const rise = Math.log((energy + 1e-9) / (this.previous + 1e-9));
     this.peak = Math.max(energy, this.peak * Math.exp(-hopSeconds / 8));
     this.sinceHit += hopSeconds;
-    const loudEnough = energy > 0.15 * this.peak && energy > 1.4 * this.average;
+    const loudEnough = energy > 0.25 * this.peak && energy > 1.6 * this.average;
     let strength = 0;
-    if (rise > 0.5 && loudEnough && this.sinceHit > 0.09) {
+    if (allowed && rise > 0.6 && loudEnough && this.sinceHit > 0.15) {
       strength = clamp(rise / 2, 0.2, 1) * clamp(energy / this.peak, 0.25, 1);
       this.sinceHit = 0;
     }
@@ -138,8 +166,10 @@ export type OrbAnalyzerOptions = {
 };
 
 export class OrbAnalyzer {
-  private levelRef = new Float32Array(OCTAVES).fill(1e-6);
-  private previousLevels = new Float32Array(VEIN_COUNT);
+  private levelRef = new Float32Array(OCTAVES).fill(LEVEL_FLOOR);
+  private recentPeak = new Float32Array(VEIN_COUNT);
+  private sinceAttack = new Float32Array(VEIN_COUNT).fill(Infinity);
+  private previousPercussion = new Float32Array(FIRST_OCTAVE + OCTAVES + 2);
   private energyRef = 0.02;
   private meanSquare = 0;
   private home: Vec2 = { x: 0, y: 0 };
@@ -172,11 +202,14 @@ export class OrbAnalyzer {
     // 1. Sum harmonic amplitude per note and octave; collect percussive energy per drum band.
     const sums = new Float32Array(VEIN_COUNT);
     const percussive: Record<DrumBand, number> = { low: 0, mid: 0, high: 0 };
+    const percussionByOctave = new Float32Array(this.previousPercussion.length);
     for (const p of points) {
       if (!(p.rawAmplitude > 0)) continue;
       const amplitude = Math.sqrt(p.rawAmplitude);
       const band = drumBandForOctave(p.octave);
-      if (band) percussive[band] += amplitude * (1 - p.harmonicity);
+      const hit = amplitude * (1 - p.harmonicity);
+      if (band) percussive[band] += hit;
+      if (p.octave >= 0 && p.octave < percussionByOctave.length) percussionByOctave[p.octave] += hit;
       if (!(p.harmonicity > 0)) continue;
       if (p.octave < FIRST_OCTAVE || p.octave >= FIRST_OCTAVE + OCTAVES) continue;
       if (lowPeaks && p.octave <= LOW_PEAK_MAX_OCTAVE) continue;
@@ -193,30 +226,44 @@ export class OrbAnalyzer {
     }
 
     // 2. Automatic gain per octave: a slowly decaying peak, with a floor tied to
-    //    the loudest octave so a quiet octave's faint overtones stay dim.
+    //    the loudest octave so a quiet octave's faint overtones stay dim, and an
+    //    absolute floor so silence stays dark.
     const decay = Math.exp(-hopSeconds / 6);
     for (let o = 0; o < OCTAVES; o++) {
       let max = 0;
       for (let pc = 0; pc < PITCH_CLASSES; pc++) max = Math.max(max, sums[o * PITCH_CLASSES + pc]);
-      this.levelRef[o] = Math.max(max, this.levelRef[o] * decay);
+      this.levelRef[o] = Math.max(max, this.levelRef[o] * decay, LEVEL_FLOOR);
     }
     const loudestRef = Math.max(...this.levelRef);
     const levels = new Float32Array(VEIN_COUNT);
     const attacks = new Float32Array(VEIN_COUNT);
+    const peakDecay = Math.exp(-hopSeconds / ATTACK_PEAK_SECONDS);
     for (let o = 0; o < OCTAVES; o++) {
-      const ref = Math.max(this.levelRef[o], loudestRef * 0.15, 1e-6);
+      const ref = Math.max(this.levelRef[o], loudestRef * 0.15);
       for (let pc = 0; pc < PITCH_CLASSES; pc++) {
         const i = o * PITCH_CLASSES + pc;
-        levels[i] = clamp(sums[i] / ref, 0, 1);
-        attacks[i] = clamp((levels[i] - this.previousLevels[i] - 0.08) * 2.2, 0, 1);
+        const level = clamp(sums[i] / ref, 0, 1);
+        levels[i] = level;
+        const held = this.recentPeak[i] * peakDecay;
+        const rise = level - held;
+        this.sinceAttack[i] += hopSeconds;
+        if (rise > ATTACK_RISE && level > ATTACK_MIN_LEVEL && this.sinceAttack[i] > ATTACK_REFRACTORY_SECONDS) {
+          attacks[i] = clamp(0.4 + (rise - ATTACK_RISE) * 1.5, 0, 1);
+          this.sinceAttack[i] = 0;
+        }
+        this.recentPeak[i] = Math.max(level, held);
       }
     }
-    this.previousLevels = levels;
 
-    // 3. Drum hits.
+    // 3. Drum hits. The mid band also needs a broadband rise (see MID_OCTAVES).
+    let risingMidOctaves = 0;
+    for (const octave of MID_OCTAVES) {
+      if (percussionByOctave[octave] > MID_OCTAVE_RISE * this.previousPercussion[octave] + 1e-6) risingMidOctaves++;
+    }
+    this.previousPercussion = percussionByOctave;
     const hits = {
       low: this.drums.low.update(percussive.low),
-      mid: this.drums.mid.update(percussive.mid),
+      mid: this.drums.mid.update(percussive.mid, risingMidOctaves >= MID_BROADBAND_OCTAVES),
       high: this.drums.high.update(percussive.high),
     };
 

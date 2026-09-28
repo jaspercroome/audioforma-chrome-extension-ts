@@ -109,6 +109,7 @@ export const VisualStage = ({ audio, backgroundStream, initialStyle = "orb" }: V
     return () => {
       analyzer.stop();
       audio.source.disconnect(tap);
+      orbFrameRef.current = emptyOrbFrame(); // no audio, no light
     };
   }, [audio]);
 

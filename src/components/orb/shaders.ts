@@ -77,8 +77,10 @@ attribute float iFlash;   // attack flash, 0..1
 
 uniform sampler2D uHistory;
 uniform float uRows;
-uniform float uHead;      // texture u of "now"
-uniform float uSpan;      // texture u covered by the whole history
+uniform float uColumns;
+uniform float uHead;      // index of the head column, which holds "now"
+uniform float uCarry;     // 0-1: how far time has run into the next column
+uniform float uSpan;      // fraction of the texture covered by the whole history
 uniform float uLatMax;
 uniform float uInner;
 uniform float uReach;
@@ -97,7 +99,12 @@ varying vec3 vViewPos;
 ${simplex3d}
 
 float levelAt(float s) {
-  return texture2D(uHistory, vec2(uHead - s * uSpan, (iRow + 0.5) / uRows)).r;
+  // Columns ago. The column behind the head was last written uCarry columns
+  // ago and older ones follow one per column; in between, blend from the live
+  // head column back to it. So the past slides smoothly rather than stepping.
+  float ago = s * uSpan * uColumns;
+  float column = ago < uCarry ? uHead - ago / max(uCarry, 1e-3) : uHead - 1.0 - (ago - uCarry);
+  return texture2D(uHistory, vec2((column + 0.5) / uColumns, (iRow + 0.5) / uRows)).r;
 }
 
 vec3 veinPoint(float u) {
@@ -121,7 +128,7 @@ void main() {
   float s = abs(2.0 * aU - 1.0);
   float level = levelAt(s);
   float flash = iFlash * exp(-s * 16.0);
-  float thickness = iTube * (0.3 + 2.2 * level + 1.6 * flash) * (1.0 - 0.5 * s) * uRadiusScale;
+  float thickness = iTube * (0.3 + 2.2 * level + 0.8 * flash) * (1.0 - 0.5 * s) * uRadiusScale;
   vec3 offset = cos(aTheta) * N + sin(aTheta) * B;
   vec3 pos = center + thickness * offset;
 
@@ -148,19 +155,20 @@ void main() {
   float facing = abs(dot(normalize(vNormalV), normalize(-vViewPos)));
   float core = pow(facing, 1.6);
   float lvl = clamp(vLevel, 0.0, 1.0);
-  // Any sound at all turns the vein fully to its colour; loudness shows as
-  // thickness instead. Half-lit veins would blend into pastel on a white room.
-  float awake = smoothstep(0.006, 0.06, lvl + vFlash); // ('active' is reserved in GLSL ES 3.0)
+  // Colour arrives with the first trace of sound and opacity follows loudness,
+  // so a faint note is a faint thread of its colour rather than something that
+  // pops between grey and neon as its level wavers.
+  float tint = smoothstep(0.0, 0.05, lvl + vFlash);
+  float awake = smoothstep(0.02, 0.22, lvl + vFlash); // ('active' is reserved in GLSL ES 3.0)
 
   // Dormant: a faint glass filament, so the orb's structure shows but stays quiet.
   vec3 dormant = vec3(0.7, 0.73, 0.78) * (0.7 + 0.3 * core);
-  // Awake: saturated neon (only the dominant channel passes 1 and blooms),
-  // turning white-hot where a note has just been struck.
-  // Kept near 1 in the dominant channel: brighter values get desaturated by the
-  // tone mapper and read pastel on the white room.
+  // Awake: saturated neon, kept near 1 in the dominant channel (brighter values
+  // get desaturated by the tone mapper and read pastel on the white room).
+  // A struck note brightens briefly toward white at the equator.
   vec3 neon = vColor * (1.0 + 0.5 * lvl) * (0.55 + 0.45 * core);
-  neon = mix(neon, vec3(1.0) * (1.3 + 1.6 * vFlash), clamp(vFlash * 1.1, 0.0, 1.0) * (0.3 + 0.7 * core));
-  vec3 color = mix(dormant, neon, awake);
+  neon = mix(neon, vec3(1.15 + 0.35 * vFlash), clamp(vFlash * 0.6, 0.0, 0.5) * (0.3 + 0.7 * core));
+  vec3 color = mix(dormant, neon, tint);
 
   float tips = 1.0 - smoothstep(0.72, 1.0, vS);
   float alpha = mix(0.08 + 0.08 * core, 1.0, awake) * tips;

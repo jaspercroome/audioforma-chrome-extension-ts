@@ -54,6 +54,42 @@ describe("OrbAnalyzer", () => {
     expect(start.attacks[veinIndex(4, 0)]).toBe(0);
   });
 
+  it("keeps silence and faint noise dark instead of turning them up", () => {
+    const a = analyzer();
+    run(a, C_MAJOR, 2);
+    // Music stops; only a faint, steady noise floor remains (about -80 dBFS).
+    const hiss = [NoteName.C, NoteName.E, NoteName.A].flatMap((n) => [4, 6, 8].map((o) => point(n, o, 1e-2, 0.6)));
+    const frame = run(a, hiss, 30);
+    expect(Math.max(...frame.levels)).toBeLessThan(0.05);
+    expect(Math.max(...run(a, [], 1).levels)).toBe(0);
+  });
+
+  it("doesn't flash on ordinary frame-to-frame jitter", () => {
+    const a = analyzer();
+    run(a, C_MAJOR, 1);
+    let flashes = 0;
+    for (let i = 0; i < 200; i++) {
+      const wobble = 1 + 0.25 * Math.sin(i * 2.3); // +-25% amplitude, every frame
+      const frame = a.update(
+        C_MAJOR.map((p) => ({ ...p, rawAmplitude: p.rawAmplitude * wobble * wobble })),
+        features
+      );
+      flashes += frame.attacks.filter((v) => v > 0).length;
+    }
+    expect(flashes).toBe(0);
+  });
+
+  it("needs a broadband rise for a mid (snare) hit, not one plucked octave", () => {
+    const a = analyzer();
+    const floor = [...C_MAJOR, ...[3, 4, 5, 6, 7].map((o) => point(NoteName.D, o, 1e3, 0))];
+    run(a, floor, 1);
+    const pluck = a.update([...C_MAJOR, ...[3, 4, 6, 7].map((o) => point(NoteName.D, o, 1e3, 0)), point(NoteName.D, 5, 1e7, 0)], features);
+    expect(pluck.hits.mid).toBe(0);
+    run(a, floor, 1);
+    const snare = a.update([...C_MAJOR, ...[3, 4, 5, 6, 7].map((o) => point(NoteName.D, o, 1e7, 0))], features);
+    expect(snare.hits.mid).toBeGreaterThan(0.2);
+  });
+
   it("detects drum hits in the right band", () => {
     const a = analyzer();
     const quiet = [...C_MAJOR, point(NoteName.C, 9, 1e3, 0), point(NoteName.C, 1, 1e3, 0)];

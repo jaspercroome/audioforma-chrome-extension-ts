@@ -11,7 +11,7 @@ import { analyzeBuffer, frameAt, Timeline } from "./analysis";
 import { PART_B_START, renderDemoOffline } from "./demoSong";
 import { Compass } from "./Compass";
 
-type Mode = "loop" | "demo" | "file";
+type Mode = "idle" | "demo" | "file";
 
 const NOTES_BY_FIFTHS = Object.values(noteNames).sort((a, b) => fifthsIndex(a) - fifthsIndex(b));
 
@@ -41,13 +41,13 @@ export const PreviewApp = () => {
   const demoBufferRef = useRef<AudioBuffer | null>(null);
   const ctxRef = useRef<AudioContext | null>(null);
   const playbackRef = useRef<{ stop: () => void } | null>(null);
-  const clockRef = useRef({ mode: "loop" as Mode, startedAt: 0, loopStart: performance.now() });
+  const clockRef = useRef({ mode: "idle" as Mode, startedAt: 0 });
 
   const reducedMotion = useMemo(() => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false, []);
   const [settings, setSettings] = useState<OrbSettings>({ mood: true, autoRotate: !reducedMotion, spread: 1 });
   const [timeline, setTimeline] = useState<Timeline | null>(null);
   const [progress, setProgress] = useState(0);
-  const [mode, setMode] = useState<Mode>("loop");
+  const [mode, setMode] = useState<Mode>("idle");
   const [fileName, setFileName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -71,17 +71,17 @@ export const PreviewApp = () => {
 
   const demoTime = useCallback(() => {
     const c = clockRef.current;
-    if (!timeline) return 0;
-    if (c.mode === "demo" && ctxRef.current) return Math.max(0, ctxRef.current.currentTime - c.startedAt);
-    return ((performance.now() - c.loopStart) / 1000) % timeline.duration;
-  }, [timeline]);
+    if (c.mode !== "demo" || !ctxRef.current) return 0;
+    return Math.max(0, ctxRef.current.currentTime - c.startedAt);
+  }, []);
 
-  // Demo frames follow the audio clock when it plays, and loop silently at rest.
+  // Demo frames follow the audio clock while it plays. Nothing plays at rest,
+  // so nothing lights up: the orb only ever shows sound you can hear.
   useEffect(() => {
     if (!timeline) return;
     let raf = 0;
     const tick = () => {
-      if (clockRef.current.mode !== "file") frameRef.current = frameAt(timeline, demoTime());
+      if (clockRef.current.mode === "demo") frameRef.current = frameAt(timeline, demoTime());
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -99,8 +99,9 @@ export const PreviewApp = () => {
   const stopPlayback = useCallback(() => {
     playbackRef.current?.stop();
     playbackRef.current = null;
-    clockRef.current = { mode: "loop", startedAt: 0, loopStart: performance.now() };
-    setMode("loop");
+    clockRef.current = { mode: "idle", startedAt: 0 };
+    frameRef.current = emptyOrbFrame(); // silence: the veins fade and drain away
+    setMode("idle");
     setFileName(null);
   }, []);
 
@@ -133,7 +134,7 @@ export const PreviewApp = () => {
     };
     source.onended = () => playbackRef.current === playback && stopPlayback();
     playbackRef.current = playback;
-    clockRef.current = { mode: "demo", startedAt: startAt, loopStart: 0 };
+    clockRef.current = { mode: "demo", startedAt: startAt };
     setMode("demo");
   };
 
@@ -188,7 +189,7 @@ export const PreviewApp = () => {
       };
       source.onended = () => playbackRef.current === playback && stopPlayback();
       playbackRef.current = playback;
-      clockRef.current = { mode: "file", startedAt: ctx.currentTime, loopStart: 0 };
+      clockRef.current = { mode: "file", startedAt: ctx.currentTime };
       setMode("file");
       setFileName(file.name);
     } catch {
@@ -230,7 +231,7 @@ export const PreviewApp = () => {
     ? section === "bright"
       ? "Playing the demo: bright section, C · G · Am · F"
       : "Playing the demo: melancholy section, Am · F · Fm · C"
-    : "Silent loop of the demo. Press play to hear it.";
+    : "Ready. The orb lights up when sound plays.";
 
   return (
     <div className="stage">
@@ -300,7 +301,7 @@ export const PreviewApp = () => {
             {status}
           </p>
           <div className="buttons">
-            {mode === "loop" ? (
+            {mode === "idle" ? (
               <button type="button" className="primary" onClick={playDemo} disabled={!timeline}>
                 Play demo with sound
               </button>

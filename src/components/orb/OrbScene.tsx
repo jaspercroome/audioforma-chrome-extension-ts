@@ -248,7 +248,7 @@ const Breath = ({
 }) => {
   const group = useRef<THREE.Group>(null);
   useFrame(({ clock }) => {
-    const s = 1 + 0.02 * energy.current + 0.022 * kick.current + 0.006 * Math.sin(clock.elapsedTime * 0.9);
+    const s = 1 + 0.02 * energy.current + 0.012 * kick.current + 0.006 * Math.sin(clock.elapsedTime * 0.9);
     group.current?.scale.setScalar(s);
   });
   return <group ref={group}>{children}</group>;
@@ -321,7 +321,7 @@ const OrbWorld = ({
               anisotropicBlur={0}
               distortion={0.04}
               distortionScale={0.3}
-              temporalDistortion={0.04}
+              temporalDistortion={0}
               clearcoat={0.08}
               clearcoatRoughness={0.1}
               envMapIntensity={0.45}

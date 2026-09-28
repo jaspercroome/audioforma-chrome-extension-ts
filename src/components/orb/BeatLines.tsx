@@ -9,7 +9,7 @@ import { beatFragment, beatVertex, MAX_BEAT_LINES } from "./shaders";
 const LINE_STYLE: Record<DrumBand, { width: number; strength: number }> = {
   low: { width: 0.055, strength: 1 },
   mid: { width: 0.03, strength: 0.6 },
-  high: { width: 0.014, strength: 0.28 },
+  high: { width: 0.014, strength: 0.18 },
 };
 
 type BeatLinesProps = {
@@ -59,7 +59,8 @@ export const BeatLines = ({ frameRef, kickRef }: BeatLinesProps) => {
         const style = LINE_STYLE[band];
         lines[next.current].set(now, hit * style.strength, style.width, 1);
         next.current = (next.current + 1) % MAX_BEAT_LINES;
-        if (band === "low") kickRef.current = Math.max(kickRef.current, hit);
+        // Only clear kicks drive the heartbeat, so it pulses with the beat, not every bass note.
+        if (band === "low" && hit >= 0.5) kickRef.current = Math.max(kickRef.current, hit);
       }
     }
     material.uniforms.uTime.value = now;
