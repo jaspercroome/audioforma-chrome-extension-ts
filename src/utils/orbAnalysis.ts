@@ -75,6 +75,12 @@ export type Vec2 = { x: number; y: number };
 export type OrbFrame = {
   /** VEIN_COUNT levels, 0-1, indexed by veinIndex(octave, pitch class). */
   levels: Float32Array;
+  /**
+   * The same notes on one scale across all octaves (the loudest note sets it),
+   * so a fundamental outshines its overtones. Used where notes are compared
+   * across registers, such as a stem's chord shape.
+   */
+  global: Float32Array;
   /** VEIN_COUNT attack strengths, 0-1: how sharply each note just started. */
   attacks: Float32Array;
   /** Drum hit strengths this frame, 0 when there was no hit. */
@@ -97,6 +103,7 @@ export type OrbFrame = {
 
 export const emptyOrbFrame = (): OrbFrame => ({
   levels: new Float32Array(VEIN_COUNT),
+  global: new Float32Array(VEIN_COUNT),
   attacks: new Float32Array(VEIN_COUNT),
   hits: { low: 0, mid: 0, high: 0 },
   energy: 0,
@@ -167,6 +174,7 @@ export type OrbAnalyzerOptions = {
 
 export class OrbAnalyzer {
   private levelRef = new Float32Array(OCTAVES).fill(LEVEL_FLOOR);
+  private globalRef = LEVEL_FLOOR;
   private recentPeak = new Float32Array(VEIN_COUNT);
   private sinceAttack = new Float32Array(VEIN_COUNT).fill(Infinity);
   private previousPercussion = new Float32Array(FIRST_OCTAVE + OCTAVES + 2);
@@ -235,6 +243,11 @@ export class OrbAnalyzer {
       this.levelRef[o] = Math.max(max, this.levelRef[o] * decay, LEVEL_FLOOR);
     }
     const loudestRef = Math.max(...this.levelRef);
+    let loudestNow = 0;
+    for (let i = 0; i < VEIN_COUNT; i++) loudestNow = Math.max(loudestNow, sums[i]);
+    this.globalRef = Math.max(loudestNow, this.globalRef * decay, LEVEL_FLOOR);
+    const global = new Float32Array(VEIN_COUNT);
+    for (let i = 0; i < VEIN_COUNT; i++) global[i] = clamp(sums[i] / this.globalRef, 0, 1);
     const levels = new Float32Array(VEIN_COUNT);
     const attacks = new Float32Array(VEIN_COUNT);
     const peakDecay = Math.exp(-hopSeconds / ATTACK_PEAK_SECONDS);
@@ -311,6 +324,6 @@ export class OrbAnalyzer {
     const centroidHz = ((features.spectralCentroid ?? 0) * sampleRate) / fftSize;
     const brightness = clamp(Math.log2(Math.max(centroidHz, 1) / 200) / Math.log2(8000 / 200), 0, 1);
 
-    return { levels, attacks, hits, energy, here, home: { ...this.home }, lean, focus, brightness, time: this.time };
+    return { levels, global, attacks, hits, energy, here, home: { ...this.home }, lean, focus, brightness, time: this.time };
   }
 }

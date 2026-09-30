@@ -17,7 +17,11 @@ const wrap = (content) =>
 module.exports = {
   mode: "production",
   devtool: false,
-  entry: { preview: path.join(__dirname, "..", "src", "preview", "index.tsx") },
+  entry: {
+    preview: path.join(__dirname, "..", "src", "preview", "index.tsx"),
+    // Per-stem analysis runs in workers; the page loads this file next to itself.
+    stemWorker: path.join(__dirname, "..", "src", "stems", "stemWorker.ts"),
+  },
   output: {
     path: path.join(__dirname, "..", "preview-dist"),
     filename: "[name].js",

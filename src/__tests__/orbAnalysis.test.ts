@@ -37,6 +37,14 @@ describe("OrbAnalyzer", () => {
     expect(octaveRow(frame.levels, 5).every((v) => v === 0)).toBe(true);
   });
 
+  it("keeps a cross-octave scale where overtones stay below their fundamental", () => {
+    // A loud C4 with a faint overtone two octaves up (1% of the power = 10% amplitude).
+    const frame = run(analyzer(), [point(NoteName.C, 4, 1e6), point(NoteName.C, 6, 1e4)], 1);
+    expect(frame.levels[veinIndex(6, 0)]).toBeGreaterThan(0.5); // per octave: bright (floored at 15% of the loudest)
+    expect(frame.global[veinIndex(4, 0)]).toBeGreaterThan(0.9);
+    expect(frame.global[veinIndex(6, 0)]).toBeCloseTo(0.1, 1); // across octaves: faint
+  });
+
   it("puts long-FFT bass peaks in their octave", () => {
     const frame = run(analyzer(), C_MAJOR, 1, [bass(65.41), bass(49)]);
     expect(frame.levels[veinIndex(2, 0)]).toBeGreaterThan(0.9); // C2
