@@ -9,7 +9,7 @@ import { StemTimeline } from "../../stems/timeline";
 import { VEIN_COUNT } from "../../utils/orbAnalysis";
 import { hzToMidi } from "../../utils/pitch";
 import { CometPath, confirmPitches, tubeIndex, writeTube } from "./cometPath";
-import { veinMidi, voicePoint } from "./voiceLayout";
+import { loudnessOut, veinMidi, voicePoint } from "./voiceLayout";
 import { bodyFragment, bodyVertex } from "./voiceShaders";
 
 /** What the Voices view reads each frame. */
@@ -56,23 +56,28 @@ const GHOST = 0.12;
  * break it.
  */
 const BRIDGE_FRAMES = 3;
-/** The head's bead is this much wider than the tail where they meet. */
-const HEAD_SCALE = 1.55;
-/** Chord-note beads: radius at full glow, and when nearly faded. */
-const BEAD_RADIUS = { base: 0.009, gain: 0.017 };
-/** The tail lightens toward its end, so it fades into the room while staying solid. */
-const TAIL_WHITEN = 0.6;
+/** The head's dot is this much wider than the tail where they meet. */
+const HEAD_SCALE = 1.7;
+/** Chord-note dots: radius when faint, plus more when loud. */
+const BEAD_RADIUS = { base: 0.011, gain: 0.011 };
+/** The tail pales toward its end, so it fades into the room while staying solid. */
+const TAIL_WHITEN = 0.65;
+/** Voices draw after the glass (render order 3), crisp, rather than through it. */
+const RENDER_ORDER = 4;
 
 const smoothstep = (a: number, b: number, v: number) => {
   const t = Math.min(1, Math.max(0, (v - a) / (b - a)));
   return t * t * (3 - 2 * t);
 };
 
-/** Tube radius at a comet's head: base plus loudness. */
+/**
+ * Tube radius at a comet's head: base, plus a little more when loud (how
+ * far out it sits already says how loud it is).
+ */
 const COMET: Record<StemRole, { base: number; gain: number }> = {
-  melody: { base: 0.008, gain: 0.014 },
-  bass: { base: 0.01, gain: 0.016 },
-  chords: { base: 0.006, gain: 0.01 },
+  melody: { base: 0.0105, gain: 0.0035 },
+  bass: { base: 0.012, gain: 0.004 },
+  chords: { base: 0.008, gain: 0.003 },
   drums: { base: 0, gain: 0 },
   mix: { base: 0, gain: 0 },
 };
@@ -92,7 +97,7 @@ const bodyMaterial = (color: string, tube: boolean) =>
   new THREE.ShaderMaterial({
     vertexShader: bodyVertex,
     fragmentShader: bodyFragment,
-    uniforms: { uColor: { value: new THREE.Color(color) }, uWhiten: { value: 0 } },
+    uniforms: { uColor: { value: new THREE.Color(color) }, uWhiten: { value: 0 }, uTailWhiten: { value: TAIL_WHITEN } },
     defines: tube ? { TUBE: "" } : {},
     toneMapped: false,
   });
@@ -105,14 +110,14 @@ const makeTube = (color: string) => {
     new THREE.BufferAttribute(new Float32Array(vertices * size), size).setUsage(THREE.DynamicDrawUsage);
   geometry.setAttribute("position", attribute(3));
   geometry.setAttribute("normal", attribute(3));
-  geometry.setAttribute("aWhiten", attribute(1));
+  geometry.setAttribute("aFade", attribute(1));
   geometry.setIndex(tubeIndex(RINGS, SEGMENTS));
   geometry.setDrawRange(0, 0);
   geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 4);
   return { geometry, material: bodyMaterial(color, true) };
 };
 
-/** Beads for chord notes: one instance per sounding note. */
+/** Dots for chord notes: one instance per sounding note. */
 const makeBeads = (color: string) => {
   const mesh = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 16, 12), bodyMaterial(color, false), VEIN_COUNT);
   mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -120,7 +125,7 @@ const makeBeads = (color: string) => {
   mesh.instanceColor?.setUsage(THREE.DynamicDrawUsage);
   mesh.count = 0;
   mesh.frustumCulled = false;
-  mesh.renderOrder = 2;
+  mesh.renderOrder = RENDER_ORDER;
   return mesh;
 };
 
@@ -139,18 +144,17 @@ type StemVoiceProps = {
   stem: VoiceStem;
   sourceRef: React.MutableRefObject<VoiceSource | null>;
   blendRef: React.MutableRefObject<number>;
-  spread: number;
 };
 
 /**
  * One stem as a body in the orb. A melodic line is a comet at its current
- * pitch: a bead that glides from note to note, trailing a tube of where it
+ * pitch: a dot that glides from note to note, trailing a stroke of where it
  * has just been (width = loudness, gaps = rests). Notes sounding together
- * are beads where they are, and the chord sounding now is joined into its
+ * are dots where they are, and the chord sounding now is joined into its
  * shape. How much of each a stem shows depends on its role and on how
  * single-line it actually is.
  */
-const StemVoice = ({ stem, sourceRef, blendRef, spread }: StemVoiceProps) => {
+const StemVoice = ({ stem, sourceRef, blendRef }: StemVoiceProps) => {
   const role = stem.style.role;
   const color = stem.style.color;
   const tube = useMemo(() => makeTube(color), [color]);
@@ -273,13 +277,13 @@ const StemVoice = ({ stem, sourceRef, blendRef, spread }: StemVoiceProps) => {
     const cometWeight = role === "chords" ? smoothstep(0.6, 0.9, m) : role === "melody" ? Math.max(0.35, smoothstep(0.2, 0.6, m)) : 1;
     const sparkWeight = role === "bass" ? 0 : role === "melody" ? 1 - smoothstep(0.3, 0.7, m) : 1 - 0.6 * cometWeight;
 
-    // --- The comet: its path as it moved, as a tube, with a bead at the head. ---
+    // --- The comet: its path as it moved, as a tube, with a dot at the head. ---
     const style = COMET[role];
     const path = s.path;
     if (n > 0 && cometWeight > 0.02) {
       path.build(
         { n, midi: s.midi, voiced: s.voiced, energy: s.energy, firstTime: timeline.timeOf(first), hop: timeline.hopSeconds },
-        { t, tailSeconds: TAIL_SECONDS, blend, spread, base: style.base, gain: style.gain }
+        { t, tailSeconds: TAIL_SECONDS, blend, base: style.base, gain: style.gain }
       );
     } else {
       path.count = 0;
@@ -288,16 +292,13 @@ const StemVoice = ({ stem, sourceRef, blendRef, spread }: StemVoiceProps) => {
     const scale = presence * cometWeight;
     const position = tube.geometry.getAttribute("position") as THREE.BufferAttribute;
     const normal = tube.geometry.getAttribute("normal") as THREE.BufferAttribute;
-    const whitenAttr = tube.geometry.getAttribute("aWhiten") as THREE.BufferAttribute;
+    const fadeAttr = tube.geometry.getAttribute("aFade") as THREE.BufferAttribute;
     const rings = path.count > 1 ? writeTube(path, scale, SEGMENTS, position.array as Float32Array, normal.array as Float32Array) : 0;
-    const whitenArray = whitenAttr.array as Float32Array;
-    for (let i = 0; i < rings; i++) {
-      const u = Math.min(1, path.age[i] / TAIL_SECONDS);
-      whitenArray.fill(TAIL_WHITEN * Math.pow(u, 1.3), i * SEGMENTS, (i + 1) * SEGMENTS);
-    }
+    const fadeArray = fadeAttr.array as Float32Array;
+    for (let i = 0; i < rings; i++) fadeArray.fill(path.fade[i], i * SEGMENTS, (i + 1) * SEGMENTS);
     tube.geometry.setDrawRange(0, Math.max(0, rings - 1) * SEGMENTS * 6);
     // Upload only the rings in use.
-    for (const attribute of [position, normal, whitenAttr]) {
+    for (const attribute of [position, normal, fadeAttr]) {
       attribute.clearUpdateRanges();
       attribute.addUpdateRange(0, Math.max(1, rings * SEGMENTS) * attribute.itemSize);
       attribute.needsUpdate = true;
@@ -310,7 +311,7 @@ const StemVoice = ({ stem, sourceRef, blendRef, spread }: StemVoiceProps) => {
       headObject.scale.setScalar(path.headRadius * HEAD_SCALE * scale);
     }
 
-    // --- Chord notes are beads where they sound, shrinking as they fade. ---
+    // --- Chord notes are dots where they sound, shrinking as they fade. ---
     const ts = song + SPARK_LEAD;
     const sparkNow = timeline.indexAt(ts);
     let beadCount = 0;
@@ -329,8 +330,10 @@ const StemVoice = ({ stem, sourceRef, blendRef, spread }: StemVoiceProps) => {
       for (let vein = 0; vein < VEIN_COUNT; vein++) {
         const glow = Math.min(1, s.glow[vein]);
         if (glow < 0.05) continue;
-        voicePoint(veinMidi(vein), blend, spread, s.p);
-        const radius = (BEAD_RADIUS.base + BEAD_RADIUS.gain * glow) * beadScale;
+        // Out = loudness: as a note fades its dot shrinks and falls back toward the axis.
+        const out = loudnessOut(glow);
+        voicePoint(veinMidi(vein), blend, out, s.p);
+        const radius = (BEAD_RADIUS.base + BEAD_RADIUS.gain * out) * beadScale;
         s.matrix.makeScale(radius, radius, radius).setPosition(s.p);
         beads.setMatrixAt(beadCount, s.matrix);
         beads.setColorAt(beadCount, s.tint.copy(s.base).lerp(s.white, 0.55 * (1 - glow)));
@@ -350,9 +353,9 @@ const StemVoice = ({ stem, sourceRef, blendRef, spread }: StemVoiceProps) => {
     const chordPosition = chord.geometry.getAttribute("position") as THREE.BufferAttribute;
     let segments = 0;
     for (let i = 0; i + 1 < s.notes.length && segments < MAX_CHORD_SEGMENTS; i++, segments++) {
-      voicePoint(veinMidi(s.notes[i]), blend, spread, s.p);
+      voicePoint(veinMidi(s.notes[i]), blend, loudnessOut(timeline.global(sparkNow, s.notes[i])), s.p);
       chordPosition.setXYZ(segments * 2, s.p.x, s.p.y, s.p.z);
-      voicePoint(veinMidi(s.notes[i + 1]), blend, spread, s.p);
+      voicePoint(veinMidi(s.notes[i + 1]), blend, loudnessOut(timeline.global(sparkNow, s.notes[i + 1])), s.p);
       chordPosition.setXYZ(segments * 2 + 1, s.p.x, s.p.y, s.p.z);
     }
     chord.geometry.setDrawRange(0, segments * 2);
@@ -364,12 +367,12 @@ const StemVoice = ({ stem, sourceRef, blendRef, spread }: StemVoiceProps) => {
 
   return (
     <group>
-      <mesh ref={tubeMesh} geometry={tube.geometry} material={tube.material} frustumCulled={false} renderOrder={2} visible={false} />
-      <mesh ref={head} material={headMaterial} renderOrder={2} visible={false}>
+      <mesh ref={tubeMesh} geometry={tube.geometry} material={tube.material} frustumCulled={false} renderOrder={RENDER_ORDER} visible={false} />
+      <mesh ref={head} material={headMaterial} renderOrder={RENDER_ORDER} visible={false}>
         <sphereGeometry args={[1, 28, 20]} />
       </mesh>
       <primitive object={beads} />
-      <lineSegments ref={chordLines} geometry={chord.geometry} material={chord.material} frustumCulled={false} renderOrder={2} visible={false} />
+      <lineSegments ref={chordLines} geometry={chord.geometry} material={chord.material} frustumCulled={false} renderOrder={RENDER_ORDER} visible={false} />
     </group>
   );
 };
@@ -378,14 +381,13 @@ type VoicesProps = {
   stems: VoiceStem[];
   sourceRef: React.MutableRefObject<VoiceSource | null>;
   blendRef: React.MutableRefObject<number>;
-  spread: number;
 };
 
 /** Every stem as its own body, meandering around the others. */
-export const Voices = ({ stems, sourceRef, blendRef, spread }: VoicesProps) => (
+export const Voices = ({ stems, sourceRef, blendRef }: VoicesProps) => (
   <group>
     {stems.map((stem) => (
-      <StemVoice key={stem.name} stem={stem} sourceRef={sourceRef} blendRef={blendRef} spread={spread} />
+      <StemVoice key={stem.name} stem={stem} sourceRef={sourceRef} blendRef={blendRef} />
     ))}
   </group>
 );

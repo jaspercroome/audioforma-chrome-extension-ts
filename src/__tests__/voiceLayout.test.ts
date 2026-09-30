@@ -1,76 +1,80 @@
 import * as THREE from "three";
+import { GLASS_RADIUS } from "../components/orb/layout";
 import {
-  cylinderPoint,
   fifthsStep,
-  harmonyPoint,
-  HELIX_OCTAVE_HEIGHT,
-  melodyPoint,
+  HEIGHT_PER_OCTAVE,
+  loudnessOut,
+  LOUDNESS_DB,
+  OUT_MIN,
+  pitchHeight,
+  reachAt,
   turnBetween,
   veinMidi,
-  voiceCylinder,
+  voiceAngle,
   voicePoint,
 } from "../components/orb/voiceLayout";
 import { veinIndex } from "../utils/orbAnalysis";
 
-const angle = (v: THREE.Vector3) => (Math.atan2(v.z, v.x) + Math.PI * 2) % (Math.PI * 2);
-const deg = (v: THREE.Vector3) => (angle(v) * 180) / Math.PI;
 const p = () => new THREE.Vector3();
+const deg = (v: THREE.Vector3) => ((Math.atan2(v.z, v.x) * 180) / Math.PI + 360) % 360;
 /** Signed angular difference in degrees, wrapped to (-180, 180]. */
-const turn = (from: THREE.Vector3, to: THREE.Vector3) => {
-  const d = (deg(to) - deg(from) + 540) % 360;
-  return d - 180;
-};
+const turn = (from: THREE.Vector3, to: THREE.Vector3) => ((deg(to) - deg(from) + 540) % 360) - 180;
+const outFromAxis = (v: THREE.Vector3) => Math.hypot(v.x, v.z);
 
 describe("voice layout", () => {
   it("orders pitch classes around the circle of fifths", () => {
     expect([0, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10, 5].map(fifthsStep)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
   });
 
-  it("puts a note on its fifths spoke on the equator in the harmony view, octave outward", () => {
-    expect(deg(harmonyPoint(67, 1, p()))).toBeCloseTo(30); // G
-    expect(deg(harmonyPoint(65, 1, p()))).toBeCloseTo(330); // F
-    expect(harmonyPoint(67, 1, p()).y).toBe(0);
-    const c3 = harmonyPoint(48, 1, p()).length();
-    const c5 = harmonyPoint(72, 1, p()).length();
-    expect(c5).toBeGreaterThan(c3);
-    expect(turn(harmonyPoint(48, 1, p()), harmonyPoint(72, 1, p()))).toBeCloseTo(0); // same spoke
+  it("puts pitch up: C4 on the equator, an octave a fixed step higher, the same in both views", () => {
+    expect(pitchHeight(60)).toBe(0);
+    expect(pitchHeight(72) - pitchHeight(60)).toBeCloseTo(HEIGHT_PER_OCTAVE);
+    expect(pitchHeight(36)).toBeLessThan(pitchHeight(48));
+    for (const blend of [0, 0.5, 1]) expect(voicePoint(67, blend, 0.7, p()).y).toBeCloseTo(pitchHeight(67));
   });
 
-  it("makes a half step jump across the orb in harmony, but a small step on the helix", () => {
-    expect(Math.abs(turn(harmonyPoint(60, 1, p()), harmonyPoint(61, 1, p())))).toBeCloseTo(150); // C to C#: five steps
-    expect(turn(melodyPoint(60, p()), melodyPoint(61, p()))).toBeCloseTo(30);
+  it("puts a note on its fifths spoke in the harmony view and in semitone order in the melody view", () => {
+    expect(deg(voicePoint(67, 0, 1, p()))).toBeCloseTo(30); // G
+    expect(deg(voicePoint(65, 0, 1, p()))).toBeCloseTo(330); // F
+    expect(Math.abs(turn(voicePoint(60, 0, 1, p()), voicePoint(61, 0, 1, p())))).toBeCloseTo(150); // C to C#: five steps
+    expect(turn(voicePoint(60, 1, 1, p()), voicePoint(61, 1, 1, p()))).toBeCloseTo(30);
+    expect(turn(voicePoint(48, 1, 1, p()), voicePoint(72, 1, 1, p()))).toBeCloseTo(0); // octaves line up
   });
 
-  it("climbs one turn per octave on the helix", () => {
-    const low = melodyPoint(60, p());
-    const high = melodyPoint(72, p());
-    expect(high.y - low.y).toBeCloseTo(HELIX_OCTAVE_HEIGHT);
-    expect(turn(low, high)).toBeCloseTo(0); // same angle, one octave up
+  it("puts loudness out: silence at the axis, the stem's peak at the glass", () => {
+    expect(loudnessOut(1)).toBe(1);
+    expect(loudnessOut(0)).toBe(0);
+    expect(loudnessOut(Math.pow(10, -LOUDNESS_DB / 20))).toBeCloseTo(0);
+    expect(loudnessOut(0.5)).toBeGreaterThan(loudnessOut(0.25));
+    const quiet = outFromAxis(voicePoint(64, 0, 0, p()));
+    const loud = outFromAxis(voicePoint(64, 0, 1, p()));
+    expect(quiet).toBeCloseTo(reachAt(pitchHeight(64)) * OUT_MIN);
+    expect(loud).toBeCloseTo(reachAt(pitchHeight(64)));
   });
 
-  it("blends between the views around the axis, never through the middle", () => {
-    const a = voicePoint(64, 0, 1, p());
-    const b = voicePoint(64, 1, 1, p());
-    expect(a.distanceTo(harmonyPoint(64, 1, p()))).toBeCloseTo(0);
-    expect(b.distanceTo(melodyPoint(64, p()))).toBeCloseTo(0);
-    for (const midi of [43, 55, 67, 79]) {
-      const from = harmonyPoint(midi, 1, p());
-      const to = melodyPoint(midi, p());
-      const mid = voicePoint(midi, 0.5, 1, p());
-      const r = (v: THREE.Vector3) => Math.hypot(v.x, v.z);
-      expect(r(mid)).toBeGreaterThanOrEqual(Math.min(r(from), r(to)) - 1e-9);
-    }
-  });
-
-  it("gives the same positions in cylindrical coordinates", () => {
-    const c = { theta: 0, r: 0, y: 0 };
-    for (const blend of [0, 0.3, 1]) {
-      for (const midi of [30, 55.3, 67, 90]) {
-        const direct = voicePoint(midi, blend, 1, p());
-        const viaCylinder = cylinderPoint(voiceCylinder(midi, blend, 1, c), p());
-        expect(direct.distanceTo(viaCylinder)).toBeCloseTo(0, 5);
+  it("keeps every voice inside the glass, however high, low or loud", () => {
+    for (let midi = 0; midi <= 127; midi += 0.5) {
+      for (const out of [0, 0.5, 1]) {
+        for (const blend of [0, 0.3, 1]) {
+          expect(voicePoint(midi, blend, out, p()).length()).toBeLessThan(GLASS_RADIUS * 0.98);
+        }
       }
     }
+  });
+
+  it("morphs between the views by turning around the axis, at the same height and distance", () => {
+    for (const midi of [43, 55.4, 67, 79]) {
+      const r = outFromAxis(voicePoint(midi, 0, 0.8, p()));
+      for (const blend of [0.25, 0.5, 0.75, 1]) {
+        const at = voicePoint(midi, blend, 0.8, p());
+        expect(outFromAxis(at)).toBeCloseTo(r);
+        expect(at.y).toBeCloseTo(pitchHeight(midi));
+      }
+    }
+    // Halfway, the angle is between the two views' angles, the short way round.
+    const harmony = voiceAngle(61, 0);
+    const melody = voiceAngle(61, 1);
+    expect(Math.abs(turnBetween(harmony, voiceAngle(61, 0.5)))).toBeLessThan(Math.abs(turnBetween(harmony, melody)));
   });
 
   it("turns the short way round", () => {

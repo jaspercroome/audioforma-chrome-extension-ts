@@ -122,39 +122,48 @@ On top of that:
 
 The preview's **Voices** view draws each instrument on its own, from stems,
 so you can watch, say, a horn line and the piano's chords move around each
-other.
+other. There's no time axis: every voice is where it sounds now.
 
 - **A melodic line** (voice, horn, bass) is a comet. It is pitch-tracked with
   YIN, which works on an isolated stem though not on a full mix, so the line
-  is continuous: bends and slides show. The comet is a bead that glides from
-  note to note and trails a solid tube of where it has just been: thicker
-  when louder, broken by rests, paler and smoother as it ages.
+  is continuous: bends and slides show. The comet is a dot that glides from
+  note to note and trails a solid stroke of where it has just been, paling as
+  it ages and broken by rests.
 - **Chords** (piano, guitar) are constellations: every clearly sounding note
-  is a bead where it is, shrinking away after, and the chord sounding now is
-  joined into its shape.
+  is a dot where it is, shrinking and falling back as it fades, and the chord
+  sounding now is joined into its shape.
+- **Drums** are the rings on the glass. With a drum stem, onsets are clean:
+  no more bass notes counted as kicks. A hit flashes a ring at the equator
+  that fades where it is.
+- **Colour is the instrument.** M and S mute and solo stems; muted stems fade
+  to a ghost, so you see what you hear.
+
+Everything is inside the glass, on three axes:
+
+- **Up: pitch.** C4 is at the equator; low notes sit low in the orb, high
+  notes high.
+- **Around: the note.** In the **Harmony** view, by its place on the circle of
+  fifths, so voicings read as shapes: stacked fourths (the "So What" chord)
+  sit on neighbouring spokes. In the **Melody** view, in semitone order, one
+  turn per octave: a pitch helix, like the original Audioforma cylinder, so a
+  rising line spirals up. Faint meridians mark the twelve notes (C's is
+  darker); the switch between views animates.
+- **Out: loudness.** A note at the stem's peak reaches for the glass; as it
+  fades it falls back toward the middle (30 dB of range). How far out a voice
+  can go narrows toward the top and bottom, following the glass.
+
+The shapes are flat and matte, drawn after the glass rather than through it
+(the glass renders what's inside it into a buffer without antialiasing, which
+turned thin lines jagged).
 
 How the comet moves (`cometPath.ts`): each pitch pulls it with a critically
 damped spring (the smoothing in maath's `easing.damp`, in exact form), so it
 never snaps into a new direction; it eases out of one note and into the next,
 and a quick run rounds into a curve. A one-frame pitch glitch (an octave
 error) is ignored: a new note has to hold for two frames. The path is sampled
-finely, resampled evenly along its length and smoothed more as it ages, so
+finely, resampled evenly along its length and smoothed more further back, so
 where the comet sat on a note and set off somewhere new, the tail relaxes
 into a curve.
-- **Drums** are the rings on the glass. With a drum stem, onsets are clean:
-  no more bass notes counted as kicks. There's no time axis here, so a hit
-  flashes a ring at the equator that fades where it is.
-- **Colour is the instrument.** M and S mute and solo stems; muted stems fade
-  to a ghost, so you see what you hear.
-
-Two layouts, with an animated switch:
-
-- **Harmony**: the circle of fifths around, octave outward, on the equator,
-  seen from above. Voicings read as shapes: stacked fourths (the "So What"
-  chord) sit on neighbouring spokes.
-- **Melody**: a pitch helix, like the original Audioforma cylinder: semitones
-  around, one turn per octave, so height is pitch and a rising line spirals
-  up.
 
 Stems come from:
 

@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { Cylinder, cylinderPoint, turnBetween, voiceCylinder } from "./voiceLayout";
+import { loudnessOut, pitchHeight, placePoint, turnBetween, voiceAngle } from "./voiceLayout";
 
 /**
  * A comet's path: where a melodic line has been over the last few seconds,
@@ -9,8 +9,9 @@ import { Cylinder, cylinderPoint, turnBetween, voiceCylinder } from "./voiceLayo
  *    smoothing in maath's easing.damp (Unity's SmoothDamp), here in its exact
  *    form. The spring's velocity never jumps, so the comet never snaps into a
  *    new direction: it eases out of one note and into the next, and a quick
- *    run rounds into a curve. It runs in cylindrical coordinates, so a leap
- *    swings around the orb instead of cutting through it.
+ *    run rounds into a curve. It runs on angle, height and loudness, so a
+ *    leap swings around the orb instead of cutting through it, and the comet
+ *    never leaves the glass.
  * 2. The spring is sampled finely in time. Exact steps compose, so the
  *    samples lie on one path however it's cut, and the head moves on smoothly
  *    between analysis frames.
@@ -18,7 +19,9 @@ import { Cylinder, cylinderPoint, turnBetween, voiceCylinder } from "./voiceLayo
  *    nothing piles up, and fast swings get as many rings as slow ones), then
  *    smoothed along its length, more further back: the tail relaxes, rounding
  *    the elbow where the comet sat on a note and set off in a new direction.
- * 4. Radii follow loudness and taper with age; each phrase ends round.
+ * 4. The tube tapers and pales along the tail by age, smoothed along its
+ *    length (where the comet sat on a note, the age jumps: smoothed, the
+ *    tail thins gradually instead of in a step). Each phrase ends round.
  */
 
 /** How quickly the comet settles on a new note (the spring's smooth time, seconds). */
@@ -40,6 +43,8 @@ const MAX_REACH = 48;
 const CONFIRM_SEMITONES = 0.6;
 /** How steeply a tube's radius may change along it (radius per unit length). */
 const MAX_SLOPE = 0.5;
+/** Width of the smoothing of age along the path (world units): no steps in taper or colour. */
+const AGE_SMOOTHING = 0.05;
 /** Longest the head runs on past the newest frame (when analysis falls behind). */
 const MAX_OVERRUN = 0.5;
 
@@ -87,7 +92,7 @@ export type CometFrames = {
   midi: Float32Array;
   /** 1 where the line sounds, 0 in rests. */
   voiced: Uint8Array;
-  /** Loudness per frame, 0..1. */
+  /** Loudness per frame, 0..1 of the stem's peak. */
   energy: Float32Array;
   /** Time of frame 0 and the spacing of frames (seconds). */
   firstTime: number;
@@ -99,10 +104,9 @@ export type CometShape = {
   t: number;
   /** Older than this isn't drawn (it's still stepped through). */
   tailSeconds: number;
-  /** Layout blend (0 harmony, 1 melody) and octave spread. */
+  /** Layout blend (0 harmony, 1 melody). */
   blend: number;
-  spread: number;
-  /** Radius at the head: base plus gain times loudness. */
+  /** Tube radius at the head: base plus gain times how far out loudness puts it (0-1). */
   base: number;
   gain: number;
 };
@@ -116,7 +120,9 @@ export class CometPath {
   readonly x: Float32Array;
   readonly y: Float32Array;
   readonly z: Float32Array;
+  /** Seconds since the comet was here, smoothed along the path. */
   readonly age: Float32Array;
+  /** How far out loudness put the comet here (0-1). */
   readonly loudness: Float32Array;
   /** Which phrase each ring belongs to: rings of different phrases aren't joined. */
   readonly phrase: Uint16Array;
@@ -124,9 +130,11 @@ export class CometPath {
   readonly radius: Float32Array;
   /** Distance along the path from the first ring. */
   readonly distance: Float32Array;
+  /** How far along the tail each ring is by age: 0 at the head, 1 at the tail's end. */
+  readonly fade: Float32Array;
   /** Whether the line sounds now (the last ring is the head). */
   sounding = false;
-  /** Where the head is, and its radius before tapering (the tail meets the head at this width). */
+  /** Where the head is, and the tube's radius there (the tail meets the head at this width). */
   readonly head = new THREE.Vector3();
   headRadius = 0;
 
@@ -138,19 +146,16 @@ export class CometPath {
   private sAge: Float32Array;
   private sLoud: Float32Array;
   private sVoiced: Uint8Array;
-  private sAt: Float32Array;
-  // Scratch for smoothing: distance from the head, window per ring, running sums.
+  // Scratch for smoothing: distance from the head, windows per ring, running sums.
   private fromHead: Float32Array;
   private reach: Float32Array;
+  private ageReach: Float32Array;
   private px: Float64Array;
-  private py: Float64Array;
-  private pz: Float64Array;
 
+  // The spring's channels: angle around, height, how far out.
   private theta: Spring = { x: 0, v: 0 };
-  private r: Spring = { x: 0, v: 0 };
   private h: Spring = { x: 0, v: 0 };
-  private loud: Spring = { x: 0, v: 0 };
-  private cylinder: Cylinder = { theta: 0, r: 0, y: 0 };
+  private out: Spring = { x: 0, v: 0 };
   private point = new THREE.Vector3();
 
   /** Room for `maxFrames` analysis frames and `rings` rings. */
@@ -162,7 +167,6 @@ export class CometPath {
     this.sAge = new Float32Array(samples);
     this.sLoud = new Float32Array(samples);
     this.sVoiced = new Uint8Array(samples);
-    this.sAt = new Float32Array(samples);
     this.x = new Float32Array(rings);
     this.y = new Float32Array(rings);
     this.z = new Float32Array(rings);
@@ -171,11 +175,11 @@ export class CometPath {
     this.phrase = new Uint16Array(rings);
     this.radius = new Float32Array(rings);
     this.distance = new Float32Array(rings);
+    this.fade = new Float32Array(rings);
     this.fromHead = new Float32Array(rings);
     this.reach = new Float32Array(rings);
+    this.ageReach = new Float32Array(rings);
     this.px = new Float64Array(rings + 1);
-    this.py = new Float64Array(rings + 1);
-    this.pz = new Float64Array(rings + 1);
   }
 
   build(frames: CometFrames, shape: CometShape) {
@@ -204,12 +208,10 @@ export class CometPath {
     const omega = 2 / SMOOTH_TIME;
     const step = hop / STEPS_PER_FRAME;
     const settle = (i: number) => {
-      voiceCylinder(midi[i], shape.blend, shape.spread, this.cylinder);
-      this.theta.x = this.cylinder.theta;
-      this.r.x = this.cylinder.r;
-      this.h.x = this.cylinder.y;
-      this.loud.x = energy[i];
-      this.theta.v = this.r.v = this.h.v = this.loud.v = 0;
+      this.theta.x = voiceAngle(midi[i], shape.blend);
+      this.h.x = pitchHeight(midi[i]);
+      this.out.x = loudnessOut(energy[i]);
+      this.theta.v = this.h.v = this.out.v = 0;
     };
     settle(start);
 
@@ -218,42 +220,36 @@ export class CometPath {
       if (i > start && voiced[i] && !voiced[i - 1]) settle(i);
       const time = firstTime + i * hop;
       const end = i === n - 1 ? Math.min(shape.t, time + MAX_OVERRUN) : time + hop;
-      this.sample(time, shape.t - time, shape.tailSeconds, voiced[i]);
+      this.sample(shape.t - time, shape.tailSeconds, voiced[i]);
       if (end <= time) continue;
 
-      voiceCylinder(midi[i], shape.blend, shape.spread, this.cylinder);
-      const theta = this.theta.x + turnBetween(this.theta.x, this.cylinder.theta);
-      const r = this.cylinder.r;
-      const y = this.cylinder.y;
-      const loud = Math.min(1, Math.max(0, energy[i]));
+      const theta = this.theta.x + turnBetween(this.theta.x, voiceAngle(midi[i], shape.blend));
+      const y = pitchHeight(midi[i]);
+      const out = loudnessOut(energy[i]);
       let at = time;
       while (at < end - 1e-9) {
         const dt = Math.min(step, end - at);
         springStep(this.theta, theta, dt, omega);
-        springStep(this.r, r, dt, omega);
         springStep(this.h, y, dt, omega);
-        springStep(this.loud, loud, dt, omega);
+        springStep(this.out, out, dt, omega);
         at += dt;
         // The step onto the next frame's time is that frame's own sample.
-        if (at < end - 1e-9 || i === n - 1) this.sample(at, shape.t - at, shape.tailSeconds, voiced[i]);
+        if (at < end - 1e-9 || i === n - 1) this.sample(shape.t - at, shape.tailSeconds, voiced[i]);
       }
     }
   }
 
-  private sample(time: number, age: number, tailSeconds: number, voiced: number) {
+  private sample(age: number, tailSeconds: number, voiced: number) {
     if (age > tailSeconds || this.samples >= this.sx.length) return;
-    this.cylinder.theta = this.theta.x;
-    this.cylinder.r = this.r.x;
-    this.cylinder.y = this.h.x;
-    const p = cylinderPoint(this.cylinder, this.point);
+    const out = Math.min(1, Math.max(0, this.out.x));
+    const p = placePoint(this.theta.x, this.h.x, out, this.point);
     const j = this.samples++;
     this.sx[j] = p.x;
     this.sy[j] = p.y;
     this.sz[j] = p.z;
     this.sAge[j] = Math.max(0, age);
-    this.sLoud[j] = Math.max(0, this.loud.x);
+    this.sLoud[j] = out;
     this.sVoiced[j] = voiced;
-    this.sAt[j] = time;
   }
 
   /** 3a: rings evenly along each phrase (the stretches where the line sounds). */
@@ -318,14 +314,11 @@ export class CometPath {
    * 3b: a smoothing along each phrase that widens along the tail: right
    * behind the head the tail follows the comet exactly, and further back it
    * relaxes, rounding the elbows where the comet sat on a note and set off
-   * somewhere new. Three box blurs (close to a Gaussian); each window is
-   * symmetric and narrowed near a phrase's ends, so the ends stay exactly
-   * where they are and a straight stretch stays straight. Window widths vary
-   * continuously (a blend of the two nearest whole widths), so the tail
-   * bends smoothly where the smoothing changes.
+   * somewhere new. Ages are smoothed too, over a short stretch, so the taper
+   * and colour change gradually where the comet sat still.
    */
   private smooth() {
-    const { x, y, z, phrase, reach, fromHead, px, py, pz } = this;
+    const { x, y, z, phrase, reach, ageReach, fromHead } = this;
     const count = this.count;
     if (count < 3) return;
     let spacing = RING_SPACING;
@@ -339,6 +332,7 @@ export class CometPath {
     for (let i = count - 2; i >= 0; i--) {
       fromHead[i] = fromHead[i + 1] + (phrase[i] === phrase[i + 1] ? Math.hypot(x[i + 1] - x[i], y[i + 1] - y[i], z[i + 1] - z[i]) : 0);
     }
+    const ageHalfWidth = boxHalfWidth(AGE_SMOOTHING / spacing);
     let startOfPhrase = 0;
     let endOfPhrase = -1;
     for (let i = 0; i < count; i++) {
@@ -349,41 +343,45 @@ export class CometPath {
       }
       const along = Math.min(1, fromHead[i] / RELAX_DISTANCE);
       const sigma = (ROUNDING_NEW + (ROUNDING_OLD - ROUNDING_NEW) * along * along * (3 - 2 * along)) / spacing; // in rings
-      // Three passes of a box of half-width h have a variance of h(h + 1).
-      const h = (Math.sqrt(1 + 4 * sigma * sigma) - 1) / 2;
-      reach[i] = Math.min(h, MAX_REACH, i - startOfPhrase, endOfPhrase - i);
+      // A symmetric window, narrowed near a phrase's ends, so the ends stay
+      // exactly where they are and a straight stretch stays straight.
+      const room = Math.min(i - startOfPhrase, endOfPhrase - i);
+      reach[i] = Math.min(boxHalfWidth(sigma), MAX_REACH, room);
+      ageReach[i] = Math.min(ageHalfWidth, MAX_REACH, room);
     }
+    this.blur(x, reach);
+    this.blur(y, reach);
+    this.blur(z, reach);
+    this.blur(this.age, ageReach);
+  }
+
+  /**
+   * Three box blurs (close to a Gaussian) with a half-width per ring. Widths
+   * vary continuously (a blend of the two nearest whole widths), so nothing
+   * steps where the smoothing changes.
+   */
+  private blur(values: Float32Array, halfWidth: Float32Array) {
+    const count = this.count;
+    const sums = this.px;
     for (let pass = 0; pass < 3; pass++) {
-      px[0] = py[0] = pz[0] = 0;
+      sums[0] = 0;
+      for (let i = 0; i < count; i++) sums[i + 1] = sums[i] + values[i];
       for (let i = 0; i < count; i++) {
-        px[i + 1] = px[i] + x[i];
-        py[i + 1] = py[i] + y[i];
-        pz[i + 1] = pz[i] + z[i];
-      }
-      for (let i = 0; i < count; i++) {
-        const h = reach[i];
+        const h = halfWidth[i];
         if (h <= 0) continue;
         const h0 = Math.floor(h);
         const f = h - h0;
-        const w0 = 2 * h0 + 1;
-        let ax = (px[i + h0 + 1] - px[i - h0]) / w0;
-        let ay = (py[i + h0 + 1] - py[i - h0]) / w0;
-        let az = (pz[i + h0 + 1] - pz[i - h0]) / w0;
+        let v = (sums[i + h0 + 1] - sums[i - h0]) / (2 * h0 + 1);
         if (f > 0) {
           const h1 = h0 + 1;
-          const w1 = 2 * h1 + 1;
-          ax += ((px[i + h1 + 1] - px[i - h1]) / w1 - ax) * f;
-          ay += ((py[i + h1 + 1] - py[i - h1]) / w1 - ay) * f;
-          az += ((pz[i + h1 + 1] - pz[i - h1]) / w1 - az) * f;
+          v += ((sums[i + h1 + 1] - sums[i - h1]) / (2 * h1 + 1) - v) * f;
         }
-        x[i] = ax;
-        y[i] = ay;
-        z[i] = az;
+        values[i] = v;
       }
     }
   }
 
-  /** 4: radii from loudness, tapering with age, round at each end of a phrase, never changing abruptly. */
+  /** 4: radii tapering with age, round at each end of a phrase, never changing abruptly. */
   private shape(shape: CometShape) {
     const { x, y, z, radius, distance, phrase } = this;
     const count = this.count;
@@ -392,8 +390,9 @@ export class CometPath {
       distance[i] = distance[i - 1] + (phrase[i] === phrase[i - 1] ? Math.hypot(x[i] - x[i - 1], y[i] - y[i - 1], z[i] - z[i - 1]) : 0);
     }
     for (let i = 0; i < count; i++) {
-      const u = Math.min(1, this.age[i] / shape.tailSeconds);
-      radius[i] = (shape.base + shape.gain * Math.min(1, this.loudness[i])) * Math.pow(1 - u, 0.9);
+      const u = Math.min(1, Math.max(0, this.age[i] / shape.tailSeconds));
+      this.fade[i] = u;
+      radius[i] = (shape.base + shape.gain * Math.min(1, this.loudness[i])) * Math.pow(1 - u, 0.7);
     }
     // Round each phrase's ends; the head's end is under the head's bead.
     for (let i = 0; i < count; ) {
@@ -421,6 +420,9 @@ export class CometPath {
     }
   }
 }
+
+/** Half-width of a box blurred three times to about this sigma (in rings): its variance is h(h + 1). */
+const boxHalfWidth = (sigma: number) => (Math.sqrt(1 + 4 * sigma * sigma) - 1) / 2;
 
 /** A hemispherical end: the radius `d` along from the tip of a tube of radius `r`. */
 const cap = (d: number, r: number) => (d >= r ? r : Math.sqrt(Math.max(0, d * (2 * r - d))));

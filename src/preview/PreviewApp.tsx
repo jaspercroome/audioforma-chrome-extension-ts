@@ -306,8 +306,8 @@ export const PreviewApp = () => {
           ) : (
             <>
               <p>
-                Each instrument is its own voice. A melodic line is a comet: a bead gliding from note to note, trailing
-                where it has just been. Chord notes are beads where they sound, joined into the chord's shape.
+                Each instrument is its own voice. A melodic line is a comet: a dot gliding from note to note, trailing
+                where it has just been. Chord notes are dots where they sound, joined into the chord's shape.
               </p>
               <dl className="axes">
                 <div>
@@ -315,12 +315,16 @@ export const PreviewApp = () => {
                   <dd>{melody ? "Note in semitone order: one turn per octave" : "Note, by its place on the circle of fifths"}</dd>
                 </div>
                 <div>
-                  <dt>{melody ? "Up" : "Out"}</dt>
-                  <dd>{melody ? "Pitch: a rising line spirals up" : "Octave: bass at the core, treble past the glass"}</dd>
+                  <dt>Up</dt>
+                  <dd>{melody ? "Pitch: a rising line spirals up" : "Pitch: low notes low, high notes high"}</dd>
+                </div>
+                <div>
+                  <dt>Out</dt>
+                  <dd>Loudness: loud notes reach for the glass, fading ones fall back to the middle</dd>
                 </div>
                 <div>
                   <dt>Tail</dt>
-                  <dd>The last few seconds of each line: thicker when louder, paler and smoother as it ages</dd>
+                  <dd>The last few seconds of each line, paling as it ages</dd>
                 </div>
                 <div>
                   <dt>Colour</dt>
@@ -345,7 +349,7 @@ export const PreviewApp = () => {
               <button
                 type="button"
                 aria-pressed={!melody}
-                title="Circle of fifths around, octave outward: harmony reads as shapes"
+                title="Notes around in circle-of-fifths order: harmony reads as shapes"
                 onClick={() => setSettings((s) => ({ ...s, view: "harmony" }))}
               >
                 Harmony
@@ -353,7 +357,7 @@ export const PreviewApp = () => {
               <button
                 type="button"
                 aria-pressed={melody}
-                title="A pitch helix: melodic contour reads directly"
+                title="Notes around in semitone order, a pitch helix: melodic contour reads directly"
                 onClick={() => setSettings((s) => ({ ...s, view: "melody" }))}
               >
                 Melody
@@ -378,7 +382,7 @@ export const PreviewApp = () => {
             />
             Auto-rotate
           </label>
-          {!(display === "voices" && melody) && (
+          {display === "orb" && (
             <label htmlFor="spread-range" className="range">
               <span>
                 Octave spread <output htmlFor="spread-range">{settings.spread.toFixed(2)}x</output>

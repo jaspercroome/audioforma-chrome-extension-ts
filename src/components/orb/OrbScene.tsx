@@ -19,8 +19,8 @@ import { fifthsAngleToHue, NOTE_COLORS_LINEAR, oklchToLinear } from "../../utils
 import { OCTAVES, OrbFrame, PITCH_CLASSES, VEIN_COUNT } from "../../utils/orbAnalysis";
 import { BeatLines } from "./BeatLines";
 import { EquatorGuide } from "./EquatorGuide";
-import { HelixGuide } from "./HelixGuide";
 import { GLASS_RADIUS, outerRadius } from "./layout";
+import { PitchGuide } from "./PitchGuide";
 import { coreFragment, coreVertex } from "./shaders";
 import { Veins } from "./Veins";
 import { Voices, VoiceSource, VoiceStem } from "./Voices";
@@ -207,13 +207,24 @@ const MoodRig = ({
   return null;
 };
 
-/** Camera distance that keeps every octave shell in frame for this window shape. */
-const fitDistance = (camera: THREE.PerspectiveCamera, width: number, height: number, spread: number) => {
+/**
+ * Camera distance that keeps every octave shell in frame for this window
+ * shape; in Voices mode, where everything is inside the glass, just the orb
+ * (with a margin, `voicesMargin`, for the page's panels in live use).
+ */
+const fitDistance = (
+  camera: THREE.PerspectiveCamera,
+  width: number,
+  height: number,
+  spread: number,
+  voices = false,
+  voicesMargin = 1.12
+) => {
   const aspect = width / Math.max(1, height);
   const halfHeight = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
   // Outermost shell (its veins taper toward the poles, so a little inside it)
   // plus the vein haze.
-  const extent = outerRadius(spread) * 0.92 + 0.2;
+  const extent = voices ? GLASS_RADIUS * voicesMargin : outerRadius(spread) * 0.92 + 0.2;
   const forHeight = (extent * 1.05) / halfHeight;
   const forWidth = extent / (halfHeight * aspect);
   return Math.max(forHeight, forWidth);
@@ -223,16 +234,16 @@ const fitDistance = (camera: THREE.PerspectiveCamera, width: number, height: num
  * Keep the whole orb in frame on any window shape and octave spread. Runs on
  * resize and spread changes only, so it never fights the viewer's own zooming.
  */
-const FitCamera = ({ spread }: { spread: number }) => {
+const FitCamera = ({ spread, voices }: { spread: number; voices: boolean }) => {
   const { camera, size, controls } = useThree();
   useEffect(() => {
     if (!(camera instanceof THREE.PerspectiveCamera)) return;
-    const distance = fitDistance(camera, size.width, size.height, spread);
+    const distance = fitDistance(camera, size.width, size.height, spread, voices, 1.28);
     const target = new THREE.Vector3(0, 0, 0);
     const offset = camera.position.clone().sub(target);
     camera.position.copy(target.add(offset.setLength(distance)));
     (controls as unknown as { update?: () => void } | null)?.update?.();
-  }, [camera, size.width, size.height, controls, spread]);
+  }, [camera, size.width, size.height, controls, spread, voices]);
   return null;
 };
 
@@ -248,7 +259,7 @@ const RenderCamera = ({
   const { size } = useThree();
   useFrame(({ camera, clock }) => {
     const t = clock.elapsedTime;
-    const distance = fitDistance(camera as THREE.PerspectiveCamera, size.width, size.height, spread);
+    const distance = fitDistance(camera as THREE.PerspectiveCamera, size.width, size.height, spread, !!voiceBlendRef);
     const angle = -0.35 + t * 0.045;
     const sway = 0.03 * Math.sin(t * 0.13);
     const elevation = voiceBlendRef
@@ -298,26 +309,29 @@ const ViewAim = ({ elevation }: { elevation: number | null }) => {
   return null;
 };
 
-/** Animates the blend between the harmony (0) and melody (1) layouts (easing in and out), and the guides with it. */
-const ViewBlend = ({
-  target,
-  blendRef,
-  equatorRef,
-  helixRef,
-}: {
-  target: number;
-  blendRef: React.MutableRefObject<number>;
-  equatorRef: React.MutableRefObject<number>;
-  helixRef: React.MutableRefObject<number>;
-}) => {
+/** Animates the blend between the harmony (0) and melody (1) layouts, easing in and out. */
+const ViewBlend = ({ target, blendRef }: { target: number; blendRef: React.MutableRefObject<number> }) => {
   const morph = useMemo(() => ({ blend: blendRef.current }), [blendRef]);
   useFrame((_, delta) => {
     const dt = Math.min(Math.max(delta, 0), 0.1);
     easing.damp(morph, "blend", target, 0.3, dt);
-    const blend = morph.blend;
-    blendRef.current = blend;
-    equatorRef.current = 1 - blend;
-    helixRef.current = blend;
+    blendRef.current = morph.blend;
+  });
+  return null;
+};
+
+/**
+ * The glass renders what's behind it into a buffer each frame, without
+ * antialiasing, and shows it through the glass. Voices are thin lines: seen
+ * that way they turn jagged and soft. So they stay out of that buffer and
+ * draw after the glass instead (render order above it, and the glass doesn't
+ * write depth): one of these hides them just before the glass's pass, the
+ * other shows them again just after. Mounted either side of the glass, so
+ * their frame callbacks run in that order.
+ */
+const GlassPass = ({ layer, show }: { layer: React.RefObject<THREE.Group>; show: boolean }) => {
+  useFrame(() => {
+    if (layer.current) layer.current.visible = show;
   });
   return null;
 };
@@ -358,8 +372,7 @@ const OrbWorld = ({
   const spread = settings.spread;
   const melody = !!voices && settings.view === "melody";
   const blend = useRef(melody ? 1 : 0);
-  const equatorVisibility = useRef(1 - blend.current);
-  const helixVisibility = useRef(blend.current);
+  const voicesLayer = useRef<THREE.Group>(null);
 
   return (
     <>
@@ -396,16 +409,23 @@ const OrbWorld = ({
 
       <Float speed={1} rotationIntensity={0.12} floatIntensity={0.45} floatingRange={[-0.06, 0.06]}>
         <Breath energy={energy} kick={kick}>
-          <ViewBlend target={melody ? 1 : 0} blendRef={blend} equatorRef={equatorVisibility} helixRef={helixVisibility} />
+          <ViewBlend target={melody ? 1 : 0} blendRef={blend} />
           <Core frameRef={frameRef} energy={energy} />
-          <EquatorGuide spread={spread} visibilityRef={equatorVisibility} />
-          {voices && <HelixGuide visibilityRef={helixVisibility} />}
+          {!voices && <EquatorGuide spread={spread} />}
           {/* In Voices mode the veins stay mounted (their levels still colour the
               floor light) but aren't drawn: each stem draws itself instead. */}
           <group visible={!voices}>
             <Veins frameRef={frameRef} smoothedRef={smoothedLevels} spread={spread} />
           </group>
-          {voices && <Voices stems={voices.stems} sourceRef={voices.sourceRef} blendRef={blend} spread={spread} />}
+          <group ref={voicesLayer}>
+            {voices && (
+              <>
+                <PitchGuide blendRef={blend} />
+                <Voices stems={voices.stems} sourceRef={voices.sourceRef} blendRef={blend} />
+              </>
+            )}
+          </group>
+          <GlassPass layer={voicesLayer} show={false} />
           <mesh renderOrder={3} scale={GLASS_RADIUS}>
             <sphereGeometry args={[1, 128, 128]} />
             {/* A thin, clear shell: enough glass to catch the studio light,
@@ -429,8 +449,11 @@ const OrbWorld = ({
               attenuationDistance={4}
               attenuationColor="#f3f6ff"
               color="#ffffff"
+              // Voices draw after the glass, so it mustn't hide them (see GlassPass).
+              depthWrite={!voices}
             />
           </mesh>
+          <GlassPass layer={voicesLayer} show />
           <BeatLines frameRef={voices?.beatFrameRef ?? frameRef} kickRef={kick} travel={!voices} />
         </Breath>
       </Float>
@@ -450,7 +473,7 @@ const OrbWorld = ({
             maxPolarAngle={Math.PI * 0.62}
             target={[0, 0, 0]}
           />
-          <FitCamera spread={spread} />
+          <FitCamera spread={spread} voices={!!voices} />
           <ViewAim elevation={voices ? (melody ? MELODY_ELEVATION : HARMONY_ELEVATION) : null} />
         </>
       )}

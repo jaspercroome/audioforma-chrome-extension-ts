@@ -9,7 +9,7 @@ import {
   tubeIndex,
   writeTube,
 } from "../components/orb/cometPath";
-import { voicePoint } from "../components/orb/voiceLayout";
+import { loudnessOut, voicePoint } from "../components/orb/voiceLayout";
 
 const HOP = 2048 / 44100;
 
@@ -34,7 +34,7 @@ const framesFrom = (midi: number[], energy = 0.6): CometFrames => {
   return frames;
 };
 
-const shapeAt = (t: number, blend: number): CometShape => ({ t, tailSeconds: 2.5, blend, spread: 1, base: 0.01, gain: 0.015 });
+const shapeAt = (t: number, blend: number): CometShape => ({ t, tailSeconds: 2.5, blend, base: 0.01, gain: 0.015 });
 
 const point = (path: CometPath, i: number) => new THREE.Vector3(path.x[i], path.y[i], path.z[i]);
 
@@ -164,13 +164,13 @@ describe("comet path", () => {
     expect(start).toBeGreaterThan(0);
     expect(path.phrase[path.count - 1]).toBe(1); // two phrases
     // The new phrase starts on its note: no swoop over from the last one.
-    expect(point(path, start).distanceTo(voicePoint(67, 1, 1, new THREE.Vector3()))).toBeLessThan(1e-5);
+    expect(point(path, start).distanceTo(voicePoint(67, 1, loudnessOut(0.6), new THREE.Vector3()))).toBeLessThan(1e-5);
     // Each phrase's ends taper to a point (but not the head's).
     expect(path.radius[start]).toBe(0);
     expect(path.radius[start - 1]).toBe(0);
     expect(path.sounding).toBe(true);
     expect(path.radius[path.count - 1]).toBeGreaterThan(0.01);
-    expect(path.headRadius).toBeCloseTo(0.01 + 0.015 * 0.6, 3);
+    expect(path.headRadius).toBeCloseTo(0.01 + 0.015 * loudnessOut(0.6), 4);
   });
 
   it("doesn't pile up rings where the comet sits still", () => {
