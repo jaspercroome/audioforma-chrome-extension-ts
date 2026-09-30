@@ -6,12 +6,24 @@ import { fifthsAngleToHue, linearToHex, oklchToLinear } from "../utils/noteColor
 import { emptyOrbFrame, OrbAnalyzer, OrbFrame } from "../utils/orbAnalysis";
 import { harmonicHistoryFrames, HarmonicMask, processPowerSpectrum } from "../utils/processPowerSpectrum";
 import { LowBandAnalyzer, LOW_FFT_SIZE } from "../utils/lowBand";
-import { OrbScene, OrbSettings } from "../components/orb/OrbScene";
+import { OrbScene, OrbSettings, OrbVoices } from "../components/orb/OrbScene";
 import { analyzeBuffer, frameAt, Timeline } from "./analysis";
 import { PART_B_START, renderDemoOffline } from "./demoSong";
 import { Compass } from "./Compass";
+import { useStemPlayback } from "./useStemPlayback";
 
 type Mode = "idle" | "demo" | "file";
+/** Orb: the whole mix as note veins. Voices: each stem as its own body. */
+type Display = "orb" | "voices";
+
+// The stem service runs on your machine; a hosted copy of this page can't reach it.
+const SERVICE_REACHABLE =
+  typeof location !== "undefined" &&
+  (location.protocol === "file:" || ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname));
+const SERVICE_MODELS = [
+  { id: "htdemucs_6s", label: "6 stems (adds piano, guitar)" },
+  { id: "htdemucs", label: "4 stems" },
+];
 
 const NOTES_BY_FIFTHS = Object.values(noteNames).sort((a, b) => fifthsIndex(a) - fifthsIndex(b));
 
@@ -44,7 +56,17 @@ export const PreviewApp = () => {
   const clockRef = useRef({ mode: "idle" as Mode, startedAt: 0 });
 
   const reducedMotion = useMemo(() => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false, []);
-  const [settings, setSettings] = useState<OrbSettings>({ mood: true, autoRotate: !reducedMotion, spread: 1 });
+  const [settings, setSettings] = useState<OrbSettings>({
+    mood: true,
+    autoRotate: !reducedMotion,
+    spread: 1,
+    view: "harmony",
+  });
+  const [display, setDisplay] = useState<Display>("voices");
+  const [server, setServer] = useState("http://localhost:8000");
+  const [model, setModel] = useState(SERVICE_MODELS[0].id);
+  const beatFrameRef = useRef<OrbFrame>(emptyOrbFrame());
+  const stems = useStemPlayback(frameRef, beatFrameRef);
   const [timeline, setTimeline] = useState<Timeline | null>(null);
   const [progress, setProgress] = useState(0);
   const [mode, setMode] = useState<Mode>("idle");
@@ -211,7 +233,12 @@ export const PreviewApp = () => {
       e.preventDefault();
       setDragging(false);
       const file = e.dataTransfer?.files?.[0];
-      if (file) void playFile(file);
+      if (!file) return;
+      if (display === "orb") void playFile(file);
+      else if (SERVICE_REACHABLE) {
+        stopPlayback();
+        stems.startService(server, file, model);
+      } else setError("Separating a song needs the stem service running on your machine (see the README).");
     };
     window.addEventListener("dragover", over);
     window.addEventListener("dragleave", leave);
@@ -223,7 +250,21 @@ export const PreviewApp = () => {
     };
   });
 
-  const status = !timeline
+  const switchDisplay = (next: Display) => {
+    if (next === display) return;
+    stopPlayback();
+    stems.stop();
+    setError(null);
+    setDisplay(next);
+  };
+
+  const voices: OrbVoices | undefined =
+    display === "voices" && stems.stems.length ? { stems: stems.stems, sourceRef: stems.sourceRef, beatFrameRef } : undefined;
+  const melody = settings.view === "melody";
+
+  const status = display === "voices"
+    ? stems.status.text || (SERVICE_REACHABLE ? "Play the demo's stems, or separate a song with your stem service." : "Play the demo's stems: each instrument is its own voice.")
+    : !timeline
     ? `Rendering the demo song… ${Math.round(progress * 100)}%`
     : mode === "file"
     ? `Playing ${fileName}`
@@ -235,33 +276,90 @@ export const PreviewApp = () => {
 
   return (
     <div className="stage">
-      <OrbScene frameRef={frameRef} settings={settings} />
+      <OrbScene frameRef={frameRef} settings={settings} voices={voices} />
 
-      <div className="overlay">
+      <div className={`overlay ${display}`}>
         <header className="panel brand">
           <h1>Audioforma</h1>
-          <p>Orb mode. Each vein is one note in one octave; the louder the note, the thicker the vein.</p>
-          <dl className="axes">
-            <div>
-              <dt>Around</dt>
-              <dd>Note, by its place on the circle of fifths (and its colour)</dd>
-            </div>
-            <div>
-              <dt>Out</dt>
-              <dd>Octave: bass at the core, treble past the glass</dd>
-            </div>
-            <div>
-              <dt>Up/down</dt>
-              <dd>Time: the equator is now, the last 4 s stream to the poles</dd>
-            </div>
-            <div>
-              <dt>Rings</dt>
-              <dd>Drum hits on the glass: kick wide, snare medium, hats fine</dd>
-            </div>
-          </dl>
+          {display === "orb" ? (
+            <>
+              <p>The whole mix. Each vein is one note in one octave; the louder the note, the thicker the vein.</p>
+              <dl className="axes">
+                <div>
+                  <dt>Around</dt>
+                  <dd>Note, by its place on the circle of fifths (and its colour)</dd>
+                </div>
+                <div>
+                  <dt>Out</dt>
+                  <dd>Octave: bass at the core, treble past the glass</dd>
+                </div>
+                <div>
+                  <dt>Up/down</dt>
+                  <dd>Time: the equator is now, the last 4 s stream to the poles</dd>
+                </div>
+                <div>
+                  <dt>Rings</dt>
+                  <dd>Drum hits on the glass: kick wide, snare medium, hats fine</dd>
+                </div>
+              </dl>
+            </>
+          ) : (
+            <>
+              <p>
+                Each instrument is its own voice. A melodic line is a comet whose trail draws its phrase; chords are
+                constellations joined into their shape.
+              </p>
+              <dl className="axes">
+                <div>
+                  <dt>Around</dt>
+                  <dd>{melody ? "Note in semitone order: one turn per octave" : "Note, by its place on the circle of fifths"}</dd>
+                </div>
+                <div>
+                  <dt>{melody ? "Up" : "Out"}</dt>
+                  <dd>{melody ? "Pitch: a rising line spirals up" : "Octave: bass at the core, treble past the glass"}</dd>
+                </div>
+                <div>
+                  <dt>{melody ? "Out" : "Up"}</dt>
+                  <dd>{melody ? "Time: older notes drift outward" : "Time: older notes rise like smoke"}</dd>
+                </div>
+                <div>
+                  <dt>Colour</dt>
+                  <dd>Which instrument; rings on the glass are drum hits</dd>
+                </div>
+              </dl>
+            </>
+          )}
         </header>
 
         <div className="panel toggles">
+          <div className="segmented" role="group" aria-label="What to show">
+            <button type="button" aria-pressed={display === "voices"} onClick={() => switchDisplay("voices")}>
+              Voices (stems)
+            </button>
+            <button type="button" aria-pressed={display === "orb"} onClick={() => switchDisplay("orb")}>
+              Orb (full mix)
+            </button>
+          </div>
+          {display === "voices" && (
+            <div className="segmented" role="group" aria-label="Layout">
+              <button
+                type="button"
+                aria-pressed={!melody}
+                title="Circle of fifths around, octave outward: harmony reads as shapes"
+                onClick={() => setSettings((s) => ({ ...s, view: "harmony" }))}
+              >
+                Harmony
+              </button>
+              <button
+                type="button"
+                aria-pressed={melody}
+                title="A pitch helix: melodic contour reads directly"
+                onClick={() => setSettings((s) => ({ ...s, view: "melody" }))}
+              >
+                Melody
+              </button>
+            </div>
+          )}
           <label htmlFor="mood-toggle">
             <input
               id="mood-toggle"
@@ -280,53 +378,138 @@ export const PreviewApp = () => {
             />
             Auto-rotate
           </label>
-          <label htmlFor="spread-range" className="range">
-            <span>
-              Octave spread <output htmlFor="spread-range">{settings.spread.toFixed(2)}x</output>
-            </span>
-            <input
-              id="spread-range"
-              type="range"
-              min={0.55}
-              max={1.6}
-              step={0.05}
-              value={settings.spread}
-              onChange={(e) => setSettings((s) => ({ ...s, spread: parseFloat(e.target.value) }))}
-            />
-          </label>
+          {!(display === "voices" && melody) && (
+            <label htmlFor="spread-range" className="range">
+              <span>
+                Octave spread <output htmlFor="spread-range">{settings.spread.toFixed(2)}x</output>
+              </span>
+              <input
+                id="spread-range"
+                type="range"
+                min={0.55}
+                max={1.6}
+                step={0.05}
+                value={settings.spread}
+                onChange={(e) => setSettings((s) => ({ ...s, spread: parseFloat(e.target.value) }))}
+              />
+            </label>
+          )}
         </div>
 
         <div className="panel transport">
           <p className="status" aria-live="polite">
             {status}
           </p>
-          <div className="buttons">
-            {mode === "idle" ? (
-              <button type="button" className="primary" onClick={playDemo} disabled={!timeline}>
-                Play demo with sound
-              </button>
-            ) : (
-              <button type="button" className="primary" onClick={stopPlayback}>
-                Stop
-              </button>
-            )}
-            <input
-              id="audio-file"
-              className="visually-hidden"
-              type="file"
-              accept="audio/*"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) void playFile(file);
-                e.target.value = "";
-              }}
-            />
-            <label htmlFor="audio-file" className="secondary">
-              Play your own file
-            </label>
-          </div>
-          <p className="hint">Or drop an audio file anywhere. It stays in your browser.</p>
-          {error && <p className="error">{error}</p>}
+          {display === "orb" ? (
+            <>
+              <div className="buttons">
+                {mode === "idle" ? (
+                  <button type="button" className="primary" onClick={playDemo} disabled={!timeline}>
+                    Play demo with sound
+                  </button>
+                ) : (
+                  <button type="button" className="primary" onClick={stopPlayback}>
+                    Stop
+                  </button>
+                )}
+                <input
+                  id="audio-file"
+                  className="visually-hidden"
+                  type="file"
+                  accept="audio/*"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) void playFile(file);
+                    e.target.value = "";
+                  }}
+                />
+                <label htmlFor="audio-file" className="secondary">
+                  Play your own file
+                </label>
+              </div>
+              <p className="hint">Or drop an audio file anywhere. It stays in your browser.</p>
+            </>
+          ) : (
+            <>
+              {stems.stems.length > 0 && (
+                <ul className="stems" aria-label="Stems">
+                  {stems.stems.map(({ name, style }) => {
+                    const muted = stems.isMuted(name);
+                    const soloed = stems.soloed === name;
+                    const heard = stems.soloed ? soloed : !muted;
+                    return (
+                      <li key={name} className={heard ? "" : "quiet"}>
+                        <span className="swatch" style={{ background: style.color }} aria-hidden="true" />
+                        <span className="stem-name">{style.label}</span>
+                        <button type="button" aria-pressed={muted} title={`Mute ${style.label}`} onClick={() => stems.toggleMute(name)}>
+                          M
+                        </button>
+                        <button type="button" aria-pressed={soloed} title={`Solo ${style.label}`} onClick={() => stems.toggleSolo(name)}>
+                          S
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              <div className="buttons">
+                {stems.playing ? (
+                  <>
+                    <button type="button" className="primary" onClick={stems.stop}>
+                      Stop
+                    </button>
+                    {stems.ended && (
+                      <button type="button" className="secondary" onClick={stems.replay}>
+                        Play again
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <button type="button" className="primary" onClick={() => void stems.startDemo()}>
+                    Play demo stems
+                  </button>
+                )}
+              </div>
+              {SERVICE_REACHABLE && (
+                <details className="service">
+                  <summary>Separate a song with your stem service</summary>
+                  <label className="field">
+                    <span>Service</span>
+                    <input type="url" value={server} onChange={(e) => setServer(e.target.value)} spellCheck={false} />
+                  </label>
+                  <label className="field">
+                    <span>Model</span>
+                    <select value={model} onChange={(e) => setModel(e.target.value)}>
+                      {SERVICE_MODELS.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <input
+                    id="stem-file"
+                    className="visually-hidden"
+                    type="file"
+                    accept="audio/*"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        stopPlayback();
+                        stems.startService(server, file, model);
+                      }
+                      e.target.value = "";
+                    }}
+                  />
+                  <label htmlFor="stem-file" className="secondary" onClick={() => stems.audioContext()}>
+                    Choose a song…
+                  </label>
+                  <p className="hint">Stems stream back while Demucs works; playback starts once enough is ready.</p>
+                </details>
+              )}
+            </>
+          )}
+          {(error || stems.error) && <p className="error">{error || stems.error}</p>}
         </div>
 
         <div className="panel readout">
@@ -356,7 +539,7 @@ export const PreviewApp = () => {
         </div>
       </div>
 
-      {dragging && <div className="drop">Drop to play</div>}
+      {dragging && <div className="drop">{display === "orb" ? "Drop to play" : "Drop to separate and play"}</div>}
     </div>
   );
 };

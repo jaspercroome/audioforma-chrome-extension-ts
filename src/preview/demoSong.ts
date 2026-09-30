@@ -175,8 +175,15 @@ class Voices {
   }
 }
 
-/** Schedule the demo on `ctx`, starting at `start`. Returns the master node (connect it to hear it). */
-export const scheduleDemo = (ctx: BaseAudioContext, start: number) => {
+/** The demo's instruments, which double as ready-made stems. */
+export type DemoPart = "lead" | "pad" | "bass" | "drums";
+const ALL_PARTS: ReadonlySet<DemoPart> = new Set(["lead", "pad", "bass", "drums"]);
+
+/**
+ * Schedule the demo on `ctx`, starting at `start`, optionally only some
+ * instruments. Returns the master node (connect it to hear it).
+ */
+export const scheduleDemo = (ctx: BaseAudioContext, start: number, parts: ReadonlySet<DemoPart> = ALL_PARTS) => {
   const master = ctx.createGain();
   master.gain.value = 0.85;
   const compressor = ctx.createDynamicsCompressor();
@@ -185,26 +192,32 @@ export const scheduleDemo = (ctx: BaseAudioContext, start: number) => {
   master.connect(compressor);
   const voices = new Voices(ctx, master);
 
+  const has = (part: DemoPart) => parts.has(part);
+
   PART_A.forEach((chord, bar) => {
     const t = start + bar * BAR;
-    voices.pad(chord.tones, t, BAR, true);
+    if (has("pad")) voices.pad(chord.tones, t, BAR, true);
     for (let i = 0; i < 8; i++) {
-      voices.bass(i % 2 === 0 ? chord.root : chord.root.replace(/\d/, (d) => String(Number(d) + 1)), t + i * (BEAT / 2), BEAT / 2, true);
-      voices.hat(t + i * (BEAT / 2), i % 2 === 1);
+      if (has("bass")) {
+        voices.bass(i % 2 === 0 ? chord.root : chord.root.replace(/\d/, (d) => String(Number(d) + 1)), t + i * (BEAT / 2), BEAT / 2, true);
+      }
+      if (has("drums")) voices.hat(t + i * (BEAT / 2), i % 2 === 1);
       const note = MELODY_A[bar][i];
-      if (note) voices.lead(note, t + i * (BEAT / 2), BEAT / 2, false);
+      if (note && has("lead")) voices.lead(note, t + i * (BEAT / 2), BEAT / 2, false);
     }
-    voices.kick(t);
-    voices.kick(t + 2 * BEAT);
+    if (has("drums")) {
+      voices.kick(t);
+      voices.kick(t + 2 * BEAT);
+    }
   });
 
   PART_B.forEach((chord, bar) => {
     const t = start + PART_B_START + bar * BAR;
-    voices.pad(chord.tones, t, BAR, false);
-    voices.bass(chord.root, t, BAR, false);
+    if (has("pad")) voices.pad(chord.tones, t, BAR, false);
+    if (has("bass")) voices.bass(chord.root, t, BAR, false);
     let beat = 0;
     for (const [note, beats] of MELODY_B[bar]) {
-      voices.lead(note, t + beat * BEAT, beats * BEAT * 0.95, true);
+      if (has("lead")) voices.lead(note, t + beat * BEAT, beats * BEAT * 0.95, true);
       beat += beats;
     }
   });
@@ -217,4 +230,17 @@ export const renderDemoOffline = async (sampleRate = 48000) => {
   const ctx = new OfflineAudioContext(2, Math.ceil(DEMO_DURATION * sampleRate), sampleRate);
   scheduleDemo(ctx, 0.05).connect(ctx.destination);
   return ctx.startRendering();
+};
+
+/** Render each instrument on its own: perfectly separated stems for testing the stem views. */
+export const renderDemoStems = async (sampleRate = 44100) => {
+  const parts: DemoPart[] = ["lead", "pad", "bass", "drums"];
+  const rendered = await Promise.all(
+    parts.map((part) => {
+      const ctx = new OfflineAudioContext(2, Math.ceil(DEMO_DURATION * sampleRate), sampleRate);
+      scheduleDemo(ctx, 0.05, new Set([part])).connect(ctx.destination);
+      return ctx.startRendering();
+    })
+  );
+  return Object.fromEntries(parts.map((part, i) => [part, rendered[i]])) as Record<DemoPart, AudioBuffer>;
 };

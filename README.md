@@ -118,6 +118,46 @@ On top of that:
    finds drum hits in the percussive part (low, mid and high bands), and
    tracks energy and the here/home/lean feeling layer.
 
+## Voices mode: stems as separate bodies
+
+The preview's **Voices** view draws each instrument on its own, from stems,
+so you can watch, say, a horn line and the piano's chords move around each
+other.
+
+- **A melodic line** (voice, horn, bass) is a comet. It is pitch-tracked with
+  YIN, which works on an isolated stem though not on a full mix, so the line
+  is continuous: bends and slides show. Its trail draws the phrase: width is
+  loudness, gaps are rests, and it glides around the orb from note to note.
+- **Chords** (piano, guitar) are constellations: every clearly sounding note
+  is a spark, and the chord sounding now is joined into its shape.
+- **Drums** are the rings on the glass. With a drum stem, onsets are clean:
+  no more bass notes counted as kicks.
+- **Colour is the instrument.** M and S mute and solo stems; muted stems fade
+  to a ghost, so you see what you hear.
+
+Two layouts, with an animated switch:
+
+- **Harmony**: circle of fifths around, octave out, time rising like smoke.
+  Voicings read as shapes: stacked fourths (the "So What" chord) sit on
+  neighbouring spokes.
+- **Melody**: a pitch helix, like the original Audioforma cylinder: semitones
+  around, one turn per octave, so height is pitch and a rising line spirals
+  up. Time drifts outward.
+
+Stems come from:
+
+- **Demo stems**: the synthesized demo rendered one instrument per stem.
+- **Your stem service** ([audioforma-stems](https://github.com/jaspercroome/audioforma-stems),
+  `/api/stream`): run it locally, open the preview from `localhost`, and
+  choose a song. Stems stream back chunk by chunk while Demucs is still
+  separating. All stems play from one audio clock, sample-aligned, and each is
+  analysed in its own worker. Playback starts once enough is ready, and pauses
+  to buffer if separation falls behind.
+
+The code is in `src/stems/` (per-stem analysis, timelines, player, session,
+service client, worker) and `src/components/orb/Voices.tsx` with
+`voiceLayout.ts`.
+
 ## Preview without the extension
 
 ```
@@ -126,7 +166,8 @@ npx http-server preview-dist
 ```
 
 Open `index.html`. The preview runs the same components and analysis on a
-synthesized demo (bright C–G–Am–F, then a melancholy Am–F–Fm–C) or on an
-audio file you drop in. `preview/audioforma-orb.html` is the page itself,
-written without an `<html>` wrapper so it can also be published as a hosted
-page; the build wraps it.
+synthesized demo (bright C–G–Am–F, then a melancholy Am–F–Fm–C), on an audio
+file you drop in, or on stems (see Voices mode). `preview/audioforma-orb.html`
+is the page itself, written without an `<html>` wrapper so it can also be
+published as a hosted page; the build wraps it. The build also emits
+`stemWorker.js`, which the page loads from next to itself.
