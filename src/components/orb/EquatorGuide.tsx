@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo } from "react";
+import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { noteNames } from "../../utils/consts";
 import { fifthsIndex } from "../../utils/notes";
@@ -12,7 +13,42 @@ const SEGMENTS = 128;
  * circle per octave shell and one spoke per note on the circle of fifths.
  * It is the orb's chart axes, kept quiet enough to disappear in a glance.
  */
-export const EquatorGuide = ({ spread }: { spread: number }) => {
+const CIRCLE_OPACITY = 0.24;
+const SPOKE_OPACITY = 0.14;
+
+export const EquatorGuide = ({
+  spread,
+  visibilityRef,
+  y = 0,
+}: {
+  spread: number;
+  /** Height of the guide: the equator for the veins, "now" for voices. */
+  y?: number;
+  /** 0-1, read every frame: lets the guide fade out when another view takes over. */
+  visibilityRef?: React.MutableRefObject<number>;
+}) => {
+  const circleMaterial = useMemo(
+    () => new THREE.LineBasicMaterial({ color: "#8d949e", transparent: true, opacity: CIRCLE_OPACITY, depthWrite: false }),
+    []
+  );
+  const spokeMaterial = useMemo(
+    () => new THREE.LineBasicMaterial({ color: "#8d949e", transparent: true, opacity: SPOKE_OPACITY, depthWrite: false }),
+    []
+  );
+  useEffect(
+    () => () => {
+      circleMaterial.dispose();
+      spokeMaterial.dispose();
+    },
+    [circleMaterial, spokeMaterial]
+  );
+  useFrame(() => {
+    const v = visibilityRef ? visibilityRef.current : 1;
+    circleMaterial.opacity = CIRCLE_OPACITY * v;
+    spokeMaterial.opacity = SPOKE_OPACITY * v;
+    circleMaterial.visible = spokeMaterial.visible = v > 0.01;
+  });
+
   const circle = useMemo(() => {
     const points: number[] = [];
     for (let i = 0; i < SEGMENTS; i++) {
@@ -41,15 +77,11 @@ export const EquatorGuide = ({ spread }: { spread: number }) => {
   useEffect(() => () => spokes.dispose(), [spokes]);
 
   return (
-    <group renderOrder={1}>
+    <group renderOrder={1} position-y={y}>
       {Array.from({ length: OCTAVES }, (_, o) => (
-        <lineLoop key={o} geometry={circle} scale={octaveRadius(FIRST_OCTAVE + o, spread)}>
-          <lineBasicMaterial color="#8d949e" transparent opacity={0.24} depthWrite={false} />
-        </lineLoop>
+        <lineLoop key={o} geometry={circle} material={circleMaterial} scale={octaveRadius(FIRST_OCTAVE + o, spread)} />
       ))}
-      <lineSegments geometry={spokes}>
-        <lineBasicMaterial color="#8d949e" transparent opacity={0.14} depthWrite={false} />
-      </lineSegments>
+      <lineSegments geometry={spokes} material={spokeMaterial} />
     </group>
   );
 };

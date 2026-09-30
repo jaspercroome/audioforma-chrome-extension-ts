@@ -18,9 +18,12 @@ import { fifthsAngleToHue, NOTE_COLORS_LINEAR, oklchToLinear } from "../../utils
 import { OCTAVES, OrbFrame, PITCH_CLASSES, VEIN_COUNT } from "../../utils/orbAnalysis";
 import { BeatLines } from "./BeatLines";
 import { EquatorGuide } from "./EquatorGuide";
+import { HelixGuide } from "./HelixGuide";
 import { GLASS_RADIUS, outerRadius } from "./layout";
 import { coreFragment, coreVertex } from "./shaders";
 import { Veins } from "./Veins";
+import { Voices, VoiceSource, VoiceStem } from "./Voices";
+import { HARMONY_NOW_Y } from "./voiceLayout";
 
 export type OrbSettings = {
   /** Tint the room by the harmonic lean (experimental "feeling" layer). */
@@ -28,6 +31,20 @@ export type OrbSettings = {
   autoRotate: boolean;
   /** Distance between octave shells: 1 is the default, lower pulls everything inside the glass. */
   spread: number;
+  /**
+   * How voices are laid out (Voices mode): "harmony" is the orb's own layout
+   * (circle of fifths around, octave out, time up); "melody" is a pitch helix
+   * (semitones around, pitch up, time out).
+   */
+  view?: "harmony" | "melody";
+};
+
+/** Stems to draw as separate voices instead of the note veins. */
+export type OrbVoices = {
+  stems: VoiceStem[];
+  sourceRef: React.MutableRefObject<VoiceSource | null>;
+  /** Drum hits for the rings (the drum stem's frames, when there is one). */
+  beatFrameRef?: React.MutableRefObject<OrbFrame>;
 };
 
 const FLOOR_Y = -1.75;
@@ -236,6 +253,29 @@ const RenderCamera = ({ spread }: { spread: number }) => {
   return null;
 };
 
+/** Animates the blend between the harmony (0) and melody (1) layouts, and the guides with it. */
+const ViewBlend = ({
+  target,
+  blendRef,
+  equatorRef,
+  helixRef,
+}: {
+  target: number;
+  blendRef: React.MutableRefObject<number>;
+  equatorRef: React.MutableRefObject<number>;
+  helixRef: React.MutableRefObject<number>;
+}) => {
+  useFrame((_, delta) => {
+    const dt = Math.min(Math.max(delta, 0), 0.1);
+    let blend = approach(blendRef.current, target, dt, 0.35);
+    if (Math.abs(blend - target) < 1e-3) blend = target;
+    blendRef.current = blend;
+    equatorRef.current = 1 - blend;
+    helixRef.current = blend;
+  });
+  return null;
+};
+
 /** Slow breathing with the energy, plus a heartbeat on every kick. */
 const Breath = ({
   energy,
@@ -258,16 +298,22 @@ const OrbWorld = ({
   frameRef,
   settings,
   renderMode,
+  voices,
 }: {
   frameRef: React.MutableRefObject<OrbFrame>;
   settings: OrbSettings;
   renderMode: boolean;
+  voices?: OrbVoices;
 }) => {
   const smoothedLevels = useRef(new Float32Array(VEIN_COUNT));
   const energy = useRef(0);
   const kick = useRef(0);
   const keyLight = useRef<THREE.DirectionalLight>(null);
   const spread = settings.spread;
+  const melody = !!voices && settings.view === "melody";
+  const blend = useRef(melody ? 1 : 0);
+  const equatorVisibility = useRef(1 - blend.current);
+  const helixVisibility = useRef(blend.current);
 
   return (
     <>
@@ -304,9 +350,16 @@ const OrbWorld = ({
 
       <Float speed={1} rotationIntensity={0.12} floatIntensity={0.45} floatingRange={[-0.06, 0.06]}>
         <Breath energy={energy} kick={kick}>
+          <ViewBlend target={melody ? 1 : 0} blendRef={blend} equatorRef={equatorVisibility} helixRef={helixVisibility} />
           <Core frameRef={frameRef} energy={energy} />
-          <EquatorGuide spread={spread} />
-          <Veins frameRef={frameRef} smoothedRef={smoothedLevels} spread={spread} />
+          <EquatorGuide spread={spread} visibilityRef={equatorVisibility} y={voices ? HARMONY_NOW_Y : 0} />
+          {voices && <HelixGuide visibilityRef={helixVisibility} />}
+          {/* In Voices mode the veins stay mounted (their levels still colour the
+              floor light) but aren't drawn: each stem draws itself instead. */}
+          <group visible={!voices}>
+            <Veins frameRef={frameRef} smoothedRef={smoothedLevels} spread={spread} />
+          </group>
+          {voices && <Voices stems={voices.stems} sourceRef={voices.sourceRef} blendRef={blend} spread={spread} />}
           <mesh renderOrder={3} scale={GLASS_RADIUS}>
             <sphereGeometry args={[1, 128, 128]} />
             {/* A thin, clear shell: enough glass to catch the studio light,
@@ -317,20 +370,22 @@ const OrbWorld = ({
               roughness={0}
               thickness={0.12}
               ior={1.12}
-              chromaticAberration={0.015}
+              // Voices are thin lines seen through the glass: colour fringing and
+              // wobble wash them out, so the glass is clearer in Voices mode.
+              chromaticAberration={voices ? 0.004 : 0.015}
               anisotropicBlur={0}
-              distortion={0.04}
+              distortion={voices ? 0.012 : 0.04}
               distortionScale={0.3}
               temporalDistortion={0}
               clearcoat={0.08}
               clearcoatRoughness={0.1}
-              envMapIntensity={0.45}
+              envMapIntensity={voices ? 0.35 : 0.45}
               attenuationDistance={4}
               attenuationColor="#f3f6ff"
               color="#ffffff"
             />
           </mesh>
-          <BeatLines frameRef={frameRef} kickRef={kick} />
+          <BeatLines frameRef={voices?.beatFrameRef ?? frameRef} kickRef={kick} />
         </Breath>
       </Float>
 
@@ -364,6 +419,8 @@ const OrbWorld = ({
 };
 
 type OrbSceneProps = {
+  /** Draw these stems as separate voices (Voices mode) instead of the note veins. */
+  voices?: OrbVoices;
   frameRef: React.MutableRefObject<OrbFrame>;
   settings: OrbSettings;
   /** Deterministic rendering for captured clips: no render loop, fixed camera path. */
@@ -371,7 +428,7 @@ type OrbSceneProps = {
   onCreated?: (state: RootState) => void;
 };
 
-export const OrbScene = ({ frameRef, settings, renderMode = false, onCreated }: OrbSceneProps) => (
+export const OrbScene = ({ frameRef, settings, renderMode = false, onCreated, voices }: OrbSceneProps) => (
   <Canvas
     frameloop={renderMode ? "never" : "always"}
     dpr={renderMode ? 1 : [1, 1.75]}
@@ -379,6 +436,6 @@ export const OrbScene = ({ frameRef, settings, renderMode = false, onCreated }: 
     camera={{ position: [0, 1.4, 7.5], fov: 30, near: 0.1, far: 80 }}
     onCreated={onCreated}
   >
-    <OrbWorld frameRef={frameRef} settings={settings} renderMode={renderMode} />
+    <OrbWorld frameRef={frameRef} settings={settings} renderMode={renderMode} voices={voices} />
   </Canvas>
 );
