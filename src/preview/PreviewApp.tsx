@@ -306,8 +306,8 @@ export const PreviewApp = () => {
           ) : (
             <>
               <p>
-                Each instrument is its own voice. A melodic line is a comet whose trail draws its phrase; chords are
-                constellations joined into their shape.
+                Each instrument is its own voice. A melodic line is a comet: a bead gliding from note to note, trailing
+                where it has just been. Chord notes are beads where they sound, joined into the chord's shape.
               </p>
               <dl className="axes">
                 <div>
@@ -319,8 +319,8 @@ export const PreviewApp = () => {
                   <dd>{melody ? "Pitch: a rising line spirals up" : "Octave: bass at the core, treble past the glass"}</dd>
                 </div>
                 <div>
-                  <dt>{melody ? "Out" : "Up"}</dt>
-                  <dd>{melody ? "Time: older notes drift outward" : "Time: older notes rise like smoke"}</dd>
+                  <dt>Tail</dt>
+                  <dd>The last few seconds of each line: thicker when louder, paler and smoother as it ages</dd>
                 </div>
                 <div>
                   <dt>Colour</dt>

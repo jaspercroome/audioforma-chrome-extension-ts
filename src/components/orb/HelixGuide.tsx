@@ -17,7 +17,7 @@ export const HelixGuide = ({ visibilityRef }: { visibilityRef: React.MutableRefO
     const p = new THREE.Vector3();
     const points: number[] = [];
     for (let i = 0; i <= (HIGHEST - LOWEST) * STEPS_PER_SEMITONE; i++) {
-      melodyPoint(LOWEST + i / STEPS_PER_SEMITONE, 0, p);
+      melodyPoint(LOWEST + i / STEPS_PER_SEMITONE, p);
       points.push(p.x, p.y, p.z);
     }
     const helix = new THREE.BufferGeometry();
@@ -25,7 +25,7 @@ export const HelixGuide = ({ visibilityRef }: { visibilityRef: React.MutableRefO
     // Tick marks at each C: short radial dashes.
     const ticks: number[] = [];
     for (let midi = LOWEST; midi <= HIGHEST; midi += 12) {
-      melodyPoint(midi, 0, p);
+      melodyPoint(midi, p);
       ticks.push(p.x * 0.9, p.y, p.z * 0.9, p.x * 1.1, p.y, p.z * 1.1);
     }
     const rings = new THREE.BufferGeometry();

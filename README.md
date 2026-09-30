@@ -126,10 +126,21 @@ other.
 
 - **A melodic line** (voice, horn, bass) is a comet. It is pitch-tracked with
   YIN, which works on an isolated stem though not on a full mix, so the line
-  is continuous: bends and slides show. Its trail draws the phrase: width is
-  loudness, gaps are rests, and it glides around the orb from note to note.
+  is continuous: bends and slides show. The comet is a bead that glides from
+  note to note and trails a solid tube of where it has just been: thicker
+  when louder, broken by rests, paler and smoother as it ages.
 - **Chords** (piano, guitar) are constellations: every clearly sounding note
-  is a spark, and the chord sounding now is joined into its shape.
+  is a bead where it is, shrinking away after, and the chord sounding now is
+  joined into its shape.
+
+How the comet moves (`cometPath.ts`): each pitch pulls it with a critically
+damped spring (the smoothing in maath's `easing.damp`, in exact form), so it
+never snaps into a new direction; it eases out of one note and into the next,
+and a quick run rounds into a curve. A one-frame pitch glitch (an octave
+error) is ignored: a new note has to hold for two frames. The path is sampled
+finely, resampled evenly along its length and smoothed more as it ages, so
+where the comet sat on a note and set off somewhere new, the tail relaxes
+into a curve.
 - **Drums** are the rings on the glass. With a drum stem, onsets are clean:
   no more bass notes counted as kicks.
 - **Colour is the instrument.** M and S mute and solo stems; muted stems fade
@@ -137,12 +148,12 @@ other.
 
 Two layouts, with an animated switch:
 
-- **Harmony**: circle of fifths around, octave out, time rising like smoke.
-  Voicings read as shapes: stacked fourths (the "So What" chord) sit on
-  neighbouring spokes.
+- **Harmony**: the circle of fifths around, octave outward, on the equator,
+  seen from above. Voicings read as shapes: stacked fourths (the "So What"
+  chord) sit on neighbouring spokes.
 - **Melody**: a pitch helix, like the original Audioforma cylinder: semitones
   around, one turn per octave, so height is pitch and a rising line spirals
-  up. Time drifts outward.
+  up.
 
 Stems come from:
 

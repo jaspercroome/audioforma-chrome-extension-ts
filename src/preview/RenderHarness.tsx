@@ -21,6 +21,8 @@ type RenderApi = {
   frameAt: (t: number) => unknown;
   /** Debug: a stem's analysis between two times. */
   stemFrames: (stem: string, from: number, to: number) => unknown;
+  /** Debug: the three.js scene (e.g. to hide the glass while checking colours). */
+  scene: () => unknown;
 };
 
 declare global {
@@ -55,6 +57,7 @@ export const RenderHarness = () => {
   const beatFrameRef = useRef<OrbFrame>(emptyOrbFrame());
   const timelineRef = useRef<Timeline | null>(null);
   const glRef = useRef<RootState["gl"] | null>(null);
+  const sceneRef = useRef<RootState["scene"] | null>(null);
   const timeRef = useRef(0);
   const sourceRef = useRef<VoiceSource | null>(null);
   const mixRef = useRef<StemTimeline | null>(null);
@@ -128,6 +131,7 @@ export const RenderHarness = () => {
         advance(t);
       },
       glInfo: () => glRef.current?.info,
+      scene: () => sceneRef.current,
       stemFrames: (stem: string, from: number, to: number) => {
         const timeline = sourceRef.current?.timelines[stem];
         if (!timeline) return null;
@@ -168,6 +172,7 @@ export const RenderHarness = () => {
       voices={voices}
       onCreated={(state) => {
         glRef.current = state.gl;
+        sceneRef.current = state.scene;
       }}
     />
   );

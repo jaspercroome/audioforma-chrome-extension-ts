@@ -9,6 +9,7 @@ import {
   OrbitControls,
 } from "@react-three/drei";
 import { Bloom, EffectComposer, ToneMapping, Vignette } from "@react-three/postprocessing";
+import { easing } from "maath";
 import { ToneMappingMode } from "postprocessing";
 import * as THREE from "three";
 
@@ -23,7 +24,7 @@ import { GLASS_RADIUS, outerRadius } from "./layout";
 import { coreFragment, coreVertex } from "./shaders";
 import { Veins } from "./Veins";
 import { Voices, VoiceSource, VoiceStem } from "./Voices";
-import { HARMONY_NOW_Y } from "./voiceLayout";
+import { HARMONY_ELEVATION, MELODY_ELEVATION } from "./voiceLayout";
 
 export type OrbSettings = {
   /** Tint the room by the harmonic lean (experimental "feeling" layer). */
@@ -236,13 +237,23 @@ const FitCamera = ({ spread }: { spread: number }) => {
 };
 
 /** Deterministic slow orbit for rendered clips; OrbitControls handles live use. */
-const RenderCamera = ({ spread }: { spread: number }) => {
+const RenderCamera = ({
+  spread,
+  voiceBlendRef,
+}: {
+  spread: number;
+  /** In Voices mode: 0 harmony (seen from above), 1 melody (seen from the side). */
+  voiceBlendRef?: React.MutableRefObject<number>;
+}) => {
   const { size } = useThree();
   useFrame(({ camera, clock }) => {
     const t = clock.elapsedTime;
     const distance = fitDistance(camera as THREE.PerspectiveCamera, size.width, size.height, spread);
     const angle = -0.35 + t * 0.045;
-    const elevation = 0.2 + 0.03 * Math.sin(t * 0.13); // a little above the equator
+    const sway = 0.03 * Math.sin(t * 0.13);
+    const elevation = voiceBlendRef
+      ? HARMONY_ELEVATION + (MELODY_ELEVATION - HARMONY_ELEVATION) * voiceBlendRef.current + sway
+      : 0.2 + sway; // a little above the equator
     camera.position.set(
       Math.sin(angle) * Math.cos(elevation) * distance,
       Math.sin(elevation) * distance,
@@ -253,7 +264,41 @@ const RenderCamera = ({ spread }: { spread: number }) => {
   return null;
 };
 
-/** Animates the blend between the harmony (0) and melody (1) layouts, and the guides with it. */
+/**
+ * Live mode: when the Voices layout changes, swing the camera to the angle
+ * that suits it (above the harmony disc, beside the helix), then leave it
+ * to the viewer; any drag stops the swing. The swing eases in and out
+ * (maath's damp).
+ */
+const ViewAim = ({ elevation }: { elevation: number | null }) => {
+  const { camera, controls } = useThree();
+  const aiming = useRef(false);
+  const aim = useMemo(() => ({ phi: 0 } as { phi: number; __damp?: unknown }), []);
+  useEffect(() => {
+    aiming.current = elevation !== null;
+    aim.__damp = undefined; // start from rest
+  }, [elevation, aim]);
+  useEffect(() => {
+    const orbit = controls as unknown as { addEventListener?: Function; removeEventListener?: Function } | null;
+    const stop = () => (aiming.current = false);
+    orbit?.addEventListener?.("start", stop);
+    return () => orbit?.removeEventListener?.("start", stop);
+  }, [controls]);
+  const spherical = useMemo(() => new THREE.Spherical(), []);
+  useFrame((_, delta) => {
+    if (!aiming.current || elevation === null) return;
+    const dt = Math.min(Math.max(delta, 0), 0.1);
+    spherical.setFromVector3(camera.position);
+    aim.phi = spherical.phi;
+    if (!easing.damp(aim, "phi", Math.PI / 2 - elevation, 0.3, dt)) aiming.current = false;
+    spherical.phi = aim.phi;
+    camera.position.setFromSpherical(spherical);
+    camera.lookAt(0, 0, 0);
+  });
+  return null;
+};
+
+/** Animates the blend between the harmony (0) and melody (1) layouts (easing in and out), and the guides with it. */
 const ViewBlend = ({
   target,
   blendRef,
@@ -265,10 +310,11 @@ const ViewBlend = ({
   equatorRef: React.MutableRefObject<number>;
   helixRef: React.MutableRefObject<number>;
 }) => {
+  const morph = useMemo(() => ({ blend: blendRef.current }), [blendRef]);
   useFrame((_, delta) => {
     const dt = Math.min(Math.max(delta, 0), 0.1);
-    let blend = approach(blendRef.current, target, dt, 0.35);
-    if (Math.abs(blend - target) < 1e-3) blend = target;
+    easing.damp(morph, "blend", target, 0.3, dt);
+    const blend = morph.blend;
     blendRef.current = blend;
     equatorRef.current = 1 - blend;
     helixRef.current = blend;
@@ -352,7 +398,7 @@ const OrbWorld = ({
         <Breath energy={energy} kick={kick}>
           <ViewBlend target={melody ? 1 : 0} blendRef={blend} equatorRef={equatorVisibility} helixRef={helixVisibility} />
           <Core frameRef={frameRef} energy={energy} />
-          <EquatorGuide spread={spread} visibilityRef={equatorVisibility} y={voices ? HARMONY_NOW_Y : 0} />
+          <EquatorGuide spread={spread} visibilityRef={equatorVisibility} />
           {voices && <HelixGuide visibilityRef={helixVisibility} />}
           {/* In Voices mode the veins stay mounted (their levels still colour the
               floor light) but aren't drawn: each stem draws itself instead. */}
@@ -390,7 +436,7 @@ const OrbWorld = ({
       </Float>
 
       {renderMode ? (
-        <RenderCamera spread={spread} />
+        <RenderCamera spread={spread} voiceBlendRef={voices ? blend : undefined} />
       ) : (
         <>
           <OrbitControls
@@ -405,15 +451,25 @@ const OrbWorld = ({
             target={[0, 0, 0]}
           />
           <FitCamera spread={spread} />
+          <ViewAim elevation={voices ? (melody ? MELODY_ELEVATION : HARMONY_ELEVATION) : null} />
         </>
       )}
 
-      <EffectComposer multisampling={4}>
-        {/* Kept modest: bloom adds light, and on a white room that reads as haze. */}
-        <Bloom mipmapBlur intensity={0.8} luminanceThreshold={1} luminanceSmoothing={0.3} radius={0.7} />
-        <ToneMapping mode={ToneMappingMode.NEUTRAL} />
-        <Vignette offset={0.32} darkness={0.28} />
-      </EffectComposer>
+      {voices ? (
+        // No bloom for Voices: the lit room blooms into a haze over everything,
+        // and thin solid voices wash out in it.
+        <EffectComposer multisampling={4}>
+          <ToneMapping mode={ToneMappingMode.NEUTRAL} />
+          <Vignette offset={0.32} darkness={0.28} />
+        </EffectComposer>
+      ) : (
+        <EffectComposer multisampling={4}>
+          {/* Kept modest: bloom adds light, and on a white room that reads as haze. */}
+          <Bloom mipmapBlur intensity={0.8} luminanceThreshold={1} luminanceSmoothing={0.3} radius={0.7} />
+          <ToneMapping mode={ToneMappingMode.NEUTRAL} />
+          <Vignette offset={0.32} darkness={0.28} />
+        </EffectComposer>
+      )}
     </>
   );
 };
