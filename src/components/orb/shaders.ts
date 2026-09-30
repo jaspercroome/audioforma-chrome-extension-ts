@@ -227,6 +227,9 @@ uniform vec4 uLines[${MAX_BEAT_LINES}]; // start time, strength, width (radians)
 uniform float uTime;
 uniform float uLatMax;
 uniform float uHistorySeconds;
+uniform float uTravel; // 1: rings travel poleward with the history; 0: they fade at the equator
+uniform float uFade;   // seconds
+uniform float uLife;   // seconds
 varying vec3 vPos;
 varying vec3 vNormalV;
 varying vec3 vViewPos;
@@ -239,10 +242,10 @@ void main() {
     vec4 line = uLines[i];
     if (line.w < 0.5) continue;
     float age = uTime - line.x;
-    if (age < 0.0 || age > uHistorySeconds) continue;
-    float front = age / uHistorySeconds * uLatMax;
+    if (age < 0.0 || age > uLife) continue;
+    float front = uTravel * age / uHistorySeconds * uLatMax;
     float d = (lat - front) / line.z;
-    float fade = line.y * exp(-age / 1.5) * (1.0 - smoothstep(0.7, 1.0, age / uHistorySeconds));
+    float fade = line.y * exp(-age / uFade) * (1.0 - smoothstep(0.7, 1.0, age / uLife));
     glint += fade * exp(-d * d * 2.0);
     groove += fade * exp(-(d + 1.1) * (d + 1.1) * 2.0);
   }

@@ -16,14 +16,21 @@ type BeatLinesProps = {
   frameRef: React.MutableRefObject<OrbFrame>;
   /** Decaying 0-1 pulse from the latest kick, for the orb's heartbeat. */
   kickRef: React.MutableRefObject<number>;
+  /**
+   * Rings travel poleward with the veins' history (Orb mode). Without it
+   * (Voices mode, which has no time axis) each hit is a ring that flashes
+   * at the equator and fades where it is.
+   */
+  travel?: boolean;
 };
 
 /**
  * Drum hits as rings on the glass. A ring starts at the equator when a hit
  * lands and travels poleward in step with the veins' history, so the rings
- * form a moving beat grid alongside the notes.
+ * form a moving beat grid alongside the notes; or, without `travel`, it
+ * flashes at the equator and fades in place.
  */
-export const BeatLines = ({ frameRef, kickRef }: BeatLinesProps) => {
+export const BeatLines = ({ frameRef, kickRef, travel = true }: BeatLinesProps) => {
   const lines = useMemo(() => Array.from({ length: MAX_BEAT_LINES }, () => new THREE.Vector4(0, 0, 1, 0)), []);
   const next = useRef(0);
   const lastFrameTime = useRef(-1);
@@ -38,6 +45,9 @@ export const BeatLines = ({ frameRef, kickRef }: BeatLinesProps) => {
           uTime: { value: 0 },
           uLatMax: { value: LATITUDE_MAX },
           uHistorySeconds: { value: HISTORY_SECONDS },
+          uTravel: { value: 1 },
+          uFade: { value: 1.5 },
+          uLife: { value: HISTORY_SECONDS },
         },
         transparent: true,
         depthWrite: false,
@@ -46,6 +56,11 @@ export const BeatLines = ({ frameRef, kickRef }: BeatLinesProps) => {
     [lines]
   );
   useEffect(() => () => material.dispose(), [material]);
+  useEffect(() => {
+    material.uniforms.uTravel.value = travel ? 1 : 0;
+    material.uniforms.uFade.value = travel ? 1.5 : 0.3;
+    material.uniforms.uLife.value = travel ? HISTORY_SECONDS : 1;
+  }, [material, travel]);
 
   useFrame(({ clock }, delta) => {
     const now = clock.elapsedTime;

@@ -431,7 +431,7 @@ const OrbWorld = ({
               color="#ffffff"
             />
           </mesh>
-          <BeatLines frameRef={voices?.beatFrameRef ?? frameRef} kickRef={kick} />
+          <BeatLines frameRef={voices?.beatFrameRef ?? frameRef} kickRef={kick} travel={!voices} />
         </Breath>
       </Float>
 

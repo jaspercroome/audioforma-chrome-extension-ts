@@ -142,7 +142,8 @@ finely, resampled evenly along its length and smoothed more as it ages, so
 where the comet sat on a note and set off somewhere new, the tail relaxes
 into a curve.
 - **Drums** are the rings on the glass. With a drum stem, onsets are clean:
-  no more bass notes counted as kicks.
+  no more bass notes counted as kicks. There's no time axis here, so a hit
+  flashes a ring at the equator that fades where it is.
 - **Colour is the instrument.** M and S mute and solo stems; muted stems fade
   to a ghost, so you see what you hear.
 
