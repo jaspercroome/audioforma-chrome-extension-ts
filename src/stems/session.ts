@@ -1,4 +1,5 @@
 import { AnalysisChannel, createAnalysisChannel } from "./analysisHost";
+import { canPlayThrough } from "./policy";
 import { StemPlayer } from "./player";
 import { StemAnalyzer } from "./stemAnalysis";
 import { styleFor, StemStyle } from "./styles";
@@ -42,6 +43,9 @@ export class StemSession {
   streamEnded = false;
   /** Separation speed in audio seconds per second (from the service), 0 if unknown. */
   speed = 0;
+  /** When the first chunk arrived (ms), and how much audio has arrived since. */
+  private firstArrival = 0;
+  private firstChunkSeconds = 0;
   private channels: Record<string, AnalysisChannel> = {};
   private finished = new Set<string>();
   private disposed = false;
@@ -99,6 +103,20 @@ export class StemSession {
     const duration = frames / sampleRate;
     this.player.addChunk({ start, duration, buffers });
     this.received = Math.max(this.received, start + duration);
+    if (!this.firstArrival) {
+      this.firstArrival = performance.now();
+      this.firstChunkSeconds = start + duration;
+    }
+  }
+
+  /**
+   * How fast audio is really arriving (audio seconds per second), counting
+   * download time as well as separation; 0 until two chunks are in.
+   */
+  arrivalSpeed() {
+    const elapsed = (performance.now() - this.firstArrival) / 1000;
+    const since = this.received - this.firstChunkSeconds;
+    return this.firstArrival && since > 0 && elapsed > 0.2 ? since / elapsed : 0;
   }
 
   /** No more chunks are coming. */
@@ -143,15 +161,24 @@ export class StemSession {
     this.playback = "waiting";
   }
 
-  /** Is enough ready to play through, given how fast separation is going? */
-  private canStart() {
+  /**
+   * Is enough ready to play from `from` to the end without stopping, given
+   * how fast separation is going? (`ahead` is the minimum lead to keep.)
+   */
+  /** The slower of what the service reports and what actually arrives; 0 if unknown. */
+  effectiveSpeed() {
+    const known = [this.speed, this.arrivalSpeed()].filter((v) => v > 0);
+    return known.length ? Math.min(...known) : 0;
+  }
+
+  private canPlayFrom(from: number, ahead: number) {
     if (this.fullyReady) return true;
-    const ready = this.readyUntil();
-    const duration = this.duration;
-    if (ready >= duration - 0.05) return this.streamEnded;
-    if (this.speed >= 1.05 || this.speed === 0) return ready >= Math.min(START_AHEAD, duration);
-    // Slower than real time: wait until the rest can arrive before playback needs it.
-    return ready >= duration * (1 - this.speed) + START_AHEAD;
+    return canPlayThrough({
+      lead: this.readyUntil() - from,
+      remaining: this.duration - from,
+      speed: this.effectiveSpeed(),
+      ahead,
+    });
   }
 
   /** Call regularly (a few times a second): starts, buffers and resumes playback. */
@@ -159,7 +186,7 @@ export class StemSession {
     if (this.disposed) return;
     const t = this.songTime();
     if (this.playback === "waiting") {
-      if (this.autoplay && this.canStart()) this.play(0);
+      if (this.autoplay && this.canPlayFrom(0, START_AHEAD)) this.play(0);
       return;
     }
     if (this.playback === "playing") {
@@ -170,7 +197,7 @@ export class StemSession {
         void this.ctx.suspend();
       }
     } else if (this.playback === "buffering") {
-      if (this.fullyReady || this.readyUntil() - t > RESUME_AHEAD) {
+      if (this.canPlayFrom(t, RESUME_AHEAD)) {
         this.playback = "playing";
         void this.ctx.resume();
       }

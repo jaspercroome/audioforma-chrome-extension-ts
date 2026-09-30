@@ -207,7 +207,8 @@ export const useStemPlayback = (
       const phase = phaseRef.current;
       const parts: string[] = [];
       if (status.source === "service" && !session.streamEnded) {
-        const speed = session.speed > 0 ? ` · ${session.speed.toFixed(1)}× real time` : "";
+        const rate = session.effectiveSpeed();
+        const speed = rate > 0 ? ` · ${rate.toFixed(1)}× real time` : "";
         parts.push(phase === "separating" ? `Separating ${percent(separated)}${speed}` : phase.replace("_", " "));
       }
       if (session.playback === "waiting") parts.push(session.received > 0 ? "buffering before playback" : "waiting for the first stems");
